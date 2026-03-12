@@ -1,0 +1,1457 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../models/order_model.dart';
+import '../services/firebase_service.dart';
+import '../services/platform_api_service.dart';
+import '../services/sms_service.dart';
+import '../services/javipos_api_service.dart';
+import '../utils/payment_change_logger.dart';
+import '../services/courier_cash_transaction_service.dart';
+
+/// Sipariş Detay Modal (Bottom Sheet)
+/// React Native Page_Center.js karşılığı
+class OrderBottomSheet extends StatefulWidget {
+  final OrderModel order;
+
+  const OrderBottomSheet({super.key, required this.order});
+
+  @override
+  State<OrderBottomSheet> createState() => _OrderBottomSheetState();
+}
+
+class _OrderBottomSheetState extends State<OrderBottomSheet> {
+  bool _isProcessing = false;
+  int _currentStep = 1;
+  bool _paymentConfirmed = false;
+  final _cashController = TextEditingController();
+  final _cardController = TextEditingController();
+  String _paymentMethod = 'cash';
+  
+  // ⏰ YENİ: Onay timeout geri sayımı
+  int? _remainingTime; // Kalan süre (saniye)
+  Timer? _countdownTimer;
+  Timer? _buttonCountdownTimer; // ⭐ Buton countdown için
+  bool _courierApprovalEnabled = false; // Kurye onay sistemi aktif mi?
+  int _approvalTimeout = 120; // Varsayılan 120 saniye
+
+  @override
+  void initState() {
+    super.initState();
+    _updateStep();
+    _loadApprovalSettings();
+    _startCountdownIfNeeded();
+    _startButtonCountdownTimer(); // ⭐ Buton countdown timer'ı başlat
+
+    // Ödeme tutarlarını doldur
+    if (widget.order.ssPaytype == 0) {
+      _cashController.text = widget.order.ssPaycount.toString();
+      _paymentMethod = 'cash';
+    } else if (widget.order.ssPaytype == 1) {
+      _cardController.text = widget.order.ssPaycount.toString();
+      _paymentMethod = 'card';
+    }
+  }
+
+  @override
+  void dispose() {
+    _cashController.dispose();
+    _cardController.dispose();
+    _countdownTimer?.cancel();
+    _buttonCountdownTimer?.cancel(); // ⭐ Buton countdown timer'ı temizle
+    super.dispose();
+  }
+
+  /// ⏰ Buton countdown timer'ı başlat (2 dakika kontrolü için)
+  void _startButtonCountdownTimer() {
+    _buttonCountdownTimer?.cancel();
+    _buttonCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          // State güncellenmesi için boş setState (buton kontrolü build'de yapılacak)
+        });
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  /// Adım durumunu güncelle
+  void _updateStep() {
+    if (widget.order.sStat == 1) {
+      setState(() => _currentStep = 3);
+    } else {
+      setState(() => _currentStep = 2);
+    }
+  }
+
+  /// ⏰ Kurye onay ayarlarını yükle (Firestore'dan)
+  Future<void> _loadApprovalSettings() async {
+    try {
+      final settings = await FirebaseService.getApprovalSettings(widget.order.sBay);
+      if (mounted) {
+        setState(() {
+          _courierApprovalEnabled = settings['courier_approval_enabled'] ?? false;
+          _approvalTimeout = settings['approval_timeout'] ?? 120;
+        });
+        print('⚙️ Kurye onay ayarları: enabled=$_courierApprovalEnabled, timeout=$_approvalTimeout');
+      }
+    } catch (e) {
+      print('⚠️ Onay ayarları yüklenemedi: $e');
+    }
+  }
+
+  /// ⏰ Countdown başlat (eğer stat 0 ve onay sistemi aktifse)
+  void _startCountdownIfNeeded() {
+    if (widget.order.sStat == 0 && _courierApprovalEnabled) {
+      // Sipariş oluşturulma zamanından bu yana geçen süreyi hesapla
+      final createdAt = widget.order.sCdate;
+      if (createdAt != null) {
+        final elapsed = DateTime.now().difference(createdAt).inSeconds;
+        final remaining = _approvalTimeout - elapsed;
+        
+        if (remaining > 0) {
+          setState(() => _remainingTime = remaining);
+          
+          _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            if (mounted) {
+              setState(() {
+                if (_remainingTime != null && _remainingTime! > 0) {
+                  _remainingTime = _remainingTime! - 1;
+                } else {
+                  timer.cancel();
+                  // Timeout! Sipariş otomatik red edilsin mi?
+                  print('⏰ Sipariş onay süresi doldu!');
+                  _autoRejectOrder();
+                }
+              });
+            }
+          });
+        } else {
+          print('⏰ Sipariş onay süresi zaten dolmuş!');
+          _autoRejectOrder();
+        }
+      }
+    }
+  }
+
+  /// 🚫 Sipariş otomatik reddet (timeout)
+  Future<void> _autoRejectOrder() async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⏰ Sipariş onay süresi doldu'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      Navigator.pop(context);
+    }
+  }
+
+  /// Sipariş kabul et
+  Future<void> _acceptOrder() async {
+    setState(() => _isProcessing = true);
+
+    try {
+      _countdownTimer?.cancel(); // Countdown'u durdur
+      await FirebaseService.acceptOrder(widget.order.docId);
+
+      // ⭐ JaviPos API çağrısı (Status: "2" = Hazırlanıyor)
+      if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+          widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+        await JaviPosApiService.updateOrderStatus(
+          javiPosid: widget.order.javiPosid!,
+          clientId: widget.order.clientId!,
+          status: '2', // Hazırlanıyor
+        );
+      } else {
+        print('⚠️ JaviPos API: JaviPosid veya ClientId eksik');
+        print('   JaviPosid: ${widget.order.javiPosid}');
+        print('   ClientId: ${widget.order.clientId}');
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Sipariş kabul edildi'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Hata: $e')),
+        );
+      }
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  /// 🚫 Sipariş reddet
+  Future<void> _rejectOrder() async {
+    // Onay dialogu göster
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Siparişi Reddet'),
+        content: const Text('Bu siparişi reddetmek istediğinize emin misiniz?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('İptal'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Reddet'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isProcessing = true);
+
+    try {
+      _countdownTimer?.cancel(); // Countdown'u durdur
+      await FirebaseService.rejectOrder(widget.order.docId, widget.order.sCourier);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('🚫 Sipariş reddedildi'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Hata: $e')),
+        );
+      }
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+
+  /// Teslim al/Teslim et
+  Future<void> _updateOrderStatus() async {
+    if (widget.order.sStat == 0) {
+      // TESLIM AL
+      // Onay kontrolü (eğer onay sistemi aktifse)
+      if (widget.order.sCourierAccepted == null || widget.order.sCourierAccepted == false) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⚠️ Lütfen önce siparişi kabul edin')),
+        );
+        return;
+      }
+
+      setState(() => _isProcessing = true);
+
+      try {
+        // ⭐ 1. Tracking Token Oluştur
+        final trackingToken = '${widget.order.sId}_${DateTime.now().millisecondsSinceEpoch}';
+        
+        await FirebaseService.updateOrderStatus(
+          widget.order.docId,
+          1,
+          receivedTime: DateTime.now(),
+        );
+
+        // ⭐ 2. Tracking token'ı Firestore'a kaydet
+        await FirebaseFirestore.instance
+            .collection('t_orders')
+            .doc(widget.order.docId)
+            .update({'s_tracking_token': trackingToken});
+
+        // Platform API çağrısı (Teslim Al)
+        if (widget.order.sOrderscr >= 1 && widget.order.sOrderscr <= 4) {
+          await PlatformApiService.callPlatformDeliveryApi(
+            platformId: widget.order.sOrderscr,
+            organizationToken: widget.order.sOrganizationToken,
+            orderId: widget.order.sOrderid,
+          );
+        }
+
+        // ⭐ JaviPos API çağrısı (Teslim Al - Status: "3" = Yolda)
+        if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+            widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+          await JaviPosApiService.updateOrderStatus(
+            javiPosid: widget.order.javiPosid!,
+            clientId: widget.order.clientId!,
+            status: '3', // Yolda
+          );
+        } else {
+          print('⚠️ JaviPos API (Teslim Al): JaviPosid veya ClientId eksik');
+        }
+
+        // 📍 3. SMS GÖNDER (s_sms_template kullanarak, trackingUrl ile)
+        SmsService.sendTrackingSMS(widget.order.docId, trackingToken).then((success) {
+          if (success) {
+            print('✅ SMS müşteriye gönderildi (s_sms_template)');
+          } else {
+            print('⚠️ SMS gönderilemedi (arka planda hata)');
+          }
+        }).catchError((error) {
+          print('❌ SMS gönderim hatası: $error');
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✅ Sipariş teslim alındı!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          Navigator.pop(context);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('❌ Hata: $e')),
+          );
+        }
+      } finally {
+        setState(() => _isProcessing = false);
+      }
+    } else {
+      // TESLİM ET
+      // 3 dakika kontrolü
+      if (widget.order.sReceived != null) {
+        final timeDiff = DateTime.now().difference(widget.order.sReceived!);
+        if (timeDiff.inMinutes < 3) {
+          final remaining = 3 - timeDiff.inMinutes;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text(
+                    'Teslim edebilmek için $remaining dakika daha beklemeniz gerekiyor.')),
+          );
+          return;
+        }
+      }
+
+      // Online ödeme ise direkt teslim et
+      if (widget.order.ssPaytype == 2) {
+        setState(() => _isProcessing = true);
+
+        try {
+          await FirebaseService.updateOrderStatus(
+            widget.order.docId,
+            2,
+            deliveredTime: DateTime.now(),
+          );
+
+          // Platform API çağrısı (Teslim Et - Online)
+          if (widget.order.sOrderscr >= 1 && widget.order.sOrderscr <= 4) {
+            await PlatformApiService.callPlatformDeliveryApi(
+              platformId: widget.order.sOrderscr,
+              organizationToken: widget.order.sOrganizationToken,
+              orderId: widget.order.sOrderid,
+            );
+          }
+
+          // ⭐ JaviPos API çağrısı (Teslim Et - Status: "4" = Teslim Edildi)
+          if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+              widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+            await JaviPosApiService.updateOrderStatus(
+              javiPosid: widget.order.javiPosid!,
+              clientId: widget.order.clientId!,
+              status: '4', // Teslim Edildi
+            );
+          } else {
+            print('⚠️ JaviPos API (Teslim Et - Online): JaviPosid veya ClientId eksik');
+          }
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('✅ Sipariş teslim edildi!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+            Navigator.pop(context);
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('❌ Hata: $e')),
+            );
+          }
+        } finally {
+          setState(() => _isProcessing = false);
+        }
+      } else {
+        // Kapıda ödeme - doğrulama gerekli
+        if (!_paymentConfirmed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Lütfen ödemeyi doğrulayın')),
+          );
+          return;
+        }
+
+        final cash = double.tryParse(_cashController.text) ?? 0;
+        final card = double.tryParse(_cardController.text) ?? 0;
+        final total = cash + card;
+
+        if (total != widget.order.ssPaycount) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text(
+                    'Toplam Ödeme ₺${widget.order.ssPaycount} olmalıdır.')),
+          );
+          return;
+        }
+
+        setState(() => _isProcessing = true);
+
+        try {
+          // ⭐ Eski ödeme bilgilerini kaydet (loglama için)
+          final oldPayment = {
+            'cash': widget.order.ssPaytype == 0 ? widget.order.ssPaycount : 0.0,
+            'card': widget.order.ssPaytype == 1 ? widget.order.ssPaycount : 0.0,
+            'online': widget.order.ssPaytype == 2 ? widget.order.ssPaycount : 0.0,
+            'type': widget.order.ssPaytype,
+            'total': widget.order.ssPaycount,
+          };
+
+          // Yeni ödeme bilgileri
+          final newPayment = {
+            'cash': cash,
+            'card': card,
+            'online': 0.0,
+            'type': _paymentMethod == 'cash' ? 0 : 1,
+            'total': total,
+          };
+
+          // ⭐ Ödeme değişikliğini logla (eğer değişti ise)
+          if (oldPayment['type'] != newPayment['type'] ||
+              oldPayment['total'] != newPayment['total'] ||
+              oldPayment['cash'] != newPayment['cash'] ||
+              oldPayment['card'] != newPayment['card']) {
+            await PaymentChangeLogger.logPaymentChange(
+              orderId: widget.order.docId,
+              courierId: widget.order.sCourier,
+              orderPid: widget.order.sPid,
+              oldPayment: oldPayment,
+              newPayment: newPayment,
+            );
+          }
+
+          final deliveredTime = DateTime.now();
+
+          await FirebaseService.updateOrderStatus(
+            widget.order.docId,
+            2,
+            deliveredTime: deliveredTime,
+            paymentData: {
+              's_pay.ss_paycount': _paymentMethod == 'cash' ? cash : card,
+              's_pay.ss_paycountdiv': _paymentMethod == 'cash' ? card : cash,
+              's_pay.payType': _paymentMethod == 'cash' ? 0 : 1,
+              if (widget.order.ssPaytype != 3) 's_pay.ss_paytype': _paymentMethod == 'cash' ? 0 : 1,
+            },
+          );
+
+          // ⭐ Nakit transaction kaydı oluştur (eğer nakit ödeme varsa)
+          if (cash > 0) {
+            await CourierCashTransactionService.createCashTransaction(
+              orderId: widget.order.docId,
+              orderPid: widget.order.sPid,
+              courierId: widget.order.sCourier,
+              bayId: widget.order.sBay,
+              workId: widget.order.sWork > 0 ? widget.order.sWork : null, // Restoran ID varsa kaydet
+              originalPaymentType: widget.order.ssPaytype,
+              finalPaymentType: _paymentMethod == 'cash' ? 0 : 1,
+              cashAmount: cash,
+              orderDeliveredAt: deliveredTime,
+            );
+          }
+
+          // Platform API çağrısı (Teslim Et - Kapıda Ödeme)
+          // ⭐ JaviPos API çağrısı (Teslim Et - Status: "4" = Teslim Edildi)
+          if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+              widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+            await JaviPosApiService.updateOrderStatus(
+              javiPosid: widget.order.javiPosid!,
+              clientId: widget.order.clientId!,
+              status: '4', // Teslim Edildi
+            );
+          } else {
+            print('⚠️ JaviPos API (Teslim Et - Kapıda Ödeme): JaviPosid veya ClientId eksik');
+          }
+
+          // Platform API çağrısı (Teslim Et - Kapıda Ödeme)
+          if (widget.order.sOrderscr >= 1 && widget.order.sOrderscr <= 4) {
+            await PlatformApiService.callPlatformDeliveryApi(
+              platformId: widget.order.sOrderscr,
+              organizationToken: widget.order.sOrganizationToken,
+              orderId: widget.order.sOrderid,
+            );
+          }
+
+          // ⭐ JaviPos API çağrısı (Teslim Et - Kapıda Ödeme - Status: "4" = Teslim Edildi)
+          if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+              widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+            await JaviPosApiService.updateOrderStatus(
+              javiPosid: widget.order.javiPosid!,
+              clientId: widget.order.clientId!,
+              status: '4', // Teslim Edildi
+            );
+          } else {
+            print('⚠️ JaviPos API (Teslim Et - Kapıda Ödeme): JaviPosid veya ClientId eksik');
+          }
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('✅ Sipariş teslim edildi!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+            Navigator.pop(context);
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('❌ Hata: $e')),
+            );
+          }
+        } finally {
+          setState(() => _isProcessing = false);
+        }
+      }
+    }
+  }
+
+  /// Haritayı aç
+  Future<void> _openMap(double lat, double lng, String label) async {
+    print('🗺️ Harita açılıyor: $label ($lat, $lng)');
+    
+    // Harita seçim dialogunu göster
+    final mapChoice = await _showMapSelectionDialog(label);
+    
+    if (mapChoice == null) return; // Kullanıcı iptal etti
+    
+    Uri url;
+    
+    if (mapChoice == 'google') {
+      // Google Maps - Navigasyon için
+      url = Uri.parse(
+          'https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving');
+      print('🗺️ Google Maps açılıyor: $url');
+    } else if (mapChoice == 'yandex') {
+      // Yandex Maps - Konumu göster (navigasyon kullanıcı tarafından başlatılabilir)
+      url = Uri.parse(
+          'https://yandex.com.tr/maps/?ll=$lat%2C$lng&z=16&l=map');
+      print('🗺️ Yandex Maps açılıyor: $url');
+    } else {
+      return;
+    }
+    
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('⚠️ Harita uygulaması açılamadı')),
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Harita açma hatası: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Hata: $e')),
+        );
+      }
+    }
+  }
+
+  /// 🗺️ Harita seçim dialogu (Google Maps / Yandex Maps)
+  Future<String?> _showMapSelectionDialog(String label) async {
+    return await showDialog<String>(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon ve Başlık
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.map,
+                  color: Colors.blue.shade700,
+                  size: 32,
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              const Text(
+                'Harita Seçin',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '$label konumunu açmak için harita uygulaması seçin',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 24),
+              
+              // Google Maps Seçeneği
+              InkWell(
+                onTap: () => Navigator.pop(context, 'google'),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.grey.shade300,
+                      width: 2,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.map,
+                          color: Colors.green.shade700,
+                          size: 32,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Google Maps',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Navigasyon ile aç',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right,
+                        color: Colors.grey.shade400,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 12),
+              
+              // Yandex Maps Seçeneği
+              InkWell(
+                onTap: () => Navigator.pop(context, 'yandex'),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.grey.shade300,
+                      width: 2,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.map_outlined,
+                          color: Colors.red.shade700,
+                          size: 32,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Yandex Maps',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Navigasyon ile aç',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right,
+                        color: Colors.grey.shade400,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 24),
+              
+              // İptal Butonu
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+                child: const Text(
+                  'İptal',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.grey,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Telefon aç (Otomatik DTMF ile)
+  Future<void> _openPhone(String phone) async {
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Telefon numarası bulunamadı')),
+      );
+      return;
+    }
+    
+    // ⭐ TRENDYOL MANTIĞI: Virgülden sonra PIN kodu otomatik girilecek
+    // Örnek: "02123653403,10709185058" → "tel:02123653403,,10709185058"
+    String cleanPhone = phone.replaceAll(RegExp(r'[^\d,]'), '');
+    
+    // Tek virgül varsa çift virgül yap (DTMF için 2 saniye bekletme)
+    if (cleanPhone.contains(',') && !cleanPhone.contains(',,')) {
+      cleanPhone = cleanPhone.replaceFirst(',', ',,');
+    }
+    
+    // 0 ile başlamıyorsa ekle (virgülden önceki kısım için)
+    if (cleanPhone.contains(',')) {
+      final parts = cleanPhone.split(',');
+      String mainPhone = parts[0];
+      if (!mainPhone.startsWith('0') && mainPhone.length >= 10) {
+        mainPhone = '0$mainPhone';
+      }
+      cleanPhone = '$mainPhone,${parts.skip(1).join(',')}';
+    } else if (!cleanPhone.startsWith('0') && cleanPhone.length >= 10) {
+      cleanPhone = '0$cleanPhone';
+    }
+    
+    print('📞 Aranıyor (Otomatik DTMF): $cleanPhone');
+    print('   Orijinal: $phone');
+    
+    final url = Uri.parse('tel:$cleanPhone');
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('⚠️ Telefon uygulaması açılamadı')),
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Telefon açma hatası: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Hata: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Onay sistemi kontrolü (onay bekliyorsa)
+    final bool isWaitingForApproval =
+        widget.order.sCourierAccepted == null && widget.order.sStat == 0;
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.9,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      builder: (context, scrollController) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: const EdgeInsets.only(top: 10),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+
+              // Header
+              Container(
+                padding: const EdgeInsets.all(20),
+                color: Colors.blue,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Sipariş Detayları',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+
+              // İçerik
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.all(18),
+                  children: [
+                    // Durum timeline
+                    _buildStatusTimeline(),
+
+                    const SizedBox(height: 20),
+
+                    // Ödeme doğrulama (stat=1 ve kapıda ödeme ise)
+                    if (widget.order.sStat == 1 && widget.order.ssPaytype != 2)
+                      _buildPaymentConfirmation(),
+
+                    // Restoran kartı
+                    _buildRestaurantCard(),
+
+                    const SizedBox(height: 12),
+
+                    // Müşteri kartı
+                    _buildCustomerCard(),
+
+                    const SizedBox(height: 12),
+
+                    // Sipariş detayları kartı
+                    _buildOrderDetailsCard(),
+
+                    const SizedBox(height: 100),
+                  ],
+                ),
+              ),
+
+              // Footer (onay veya teslim butonları)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
+                ),
+                child: isWaitingForApproval
+                    ? _buildApprovalButtons()
+                    : _buildDeliveryButton(),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// Durum timeline
+  Widget _buildStatusTimeline() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _buildTimelineStep('Oluştu', 1, true),
+            _buildTimelineLine(_currentStep >= 2),
+            _buildTimelineStep('Hazır', 2, _currentStep >= 2),
+            _buildTimelineLine(_currentStep >= 3),
+            _buildTimelineStep('Alındı', 3, _currentStep >= 3),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTimelineStep(String label, int step, bool active) {
+    return Column(
+      children: [
+        Container(
+          width: 20,
+          height: 20,
+          decoration: BoxDecoration(
+            color: active ? Colors.blue : Colors.grey[300],
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: active ? Colors.black : Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTimelineLine(bool active) {
+    return Expanded(
+      child: Container(
+        height: 3,
+        color: active ? Colors.blue : Colors.grey[300],
+        margin: const EdgeInsets.only(bottom: 25),
+      ),
+    );
+  }
+
+  /// Ödeme doğrulama
+  Widget _buildPaymentConfirmation() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Ödeme Doğrula',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Radio<String>(
+                  value: 'cash',
+                  groupValue: _paymentMethod,
+                  onChanged: (value) {
+                    setState(() {
+                      _paymentMethod = value!;
+                      if (value == 'cash') {
+                        final total = (double.tryParse(_cashController.text) ?? 0) +
+                            (double.tryParse(_cardController.text) ?? 0);
+                        _cashController.text = total.toString();
+                        _cardController.text = '0';
+                      }
+                    });
+                  },
+                ),
+                const Text('Nakit'),
+                const SizedBox(width: 20),
+                Radio<String>(
+                  value: 'card',
+                  groupValue: _paymentMethod,
+                  onChanged: (value) {
+                    setState(() {
+                      _paymentMethod = value!;
+                      if (value == 'card') {
+                        final total = (double.tryParse(_cashController.text) ?? 0) +
+                            (double.tryParse(_cardController.text) ?? 0);
+                        _cardController.text = total.toString();
+                        _cashController.text = '0';
+                      }
+                    });
+                  },
+                ),
+                const Text('Kart'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _cashController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Nakit',
+                      prefixIcon: Icon(Icons.money),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _cardController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Kart',
+                      prefixIcon: Icon(Icons.credit_card),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            CheckboxListTile(
+              value: _paymentConfirmed,
+              onChanged: (value) => setState(() => _paymentConfirmed = value!),
+              title: const Text('Ödemeyi Doğruluyorum'),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Restoran kartı
+  Widget _buildRestaurantCard() {
+    // Adres ve aksiyonlar her zaman gösterilsin
+    final hideAddress = false;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Restoran Detayı',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: () {
+                        if (widget.order.ssLocationWork != null) {
+                          _openMap(
+                            widget.order.ssLocationWork!['latitude'],
+                            widget.order.ssLocationWork!['longitude'],
+                            'Restoran',
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Konum bilgisi yok')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.location_on, color: Colors.green),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.green.withOpacity(0.1),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: () => _openPhone(widget.order.sPhonework),
+                      icon: const Icon(Icons.phone, color: Colors.blue),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.blue.withOpacity(0.1),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.store, color: Colors.blue),
+              title: const Text('Restoran Adı'),
+              subtitle: Text(widget.order.sRestaurantName ?? widget.order.sNameWork),
+            ),
+            ListTile(
+              leading: const Icon(Icons.location_on, color: Colors.green),
+              title: const Text('Adres'),
+              subtitle: Text(widget.order.sWorkAdres.isEmpty ? 'Adres bulunamadı' : widget.order.sWorkAdres),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Müşteri kartı
+  Widget _buildCustomerCard() {
+    // Her zaman göster
+    final hideAddress = false;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Müşteri Detayı',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: () {
+                        if (widget.order.ssLoc != null) {
+                          _openMap(
+                            widget.order.ssLoc!['latitude'],
+                            widget.order.ssLoc!['longitude'],
+                            'Müşteri',
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Konum bilgisi yok')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.location_on, color: Colors.red),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.red.withOpacity(0.1),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: () => _openPhone(widget.order.ssPhone),
+                      icon: const Icon(Icons.phone, color: Colors.blue),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.blue.withOpacity(0.1),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.person, color: Colors.blue),
+              title: const Text('Müşteri Adı'),
+              subtitle: Text(widget.order.ssFullname),
+            ),
+            ListTile(
+              leading: const Icon(Icons.location_on, color: Colors.red),
+              title: const Text('Adres'),
+              subtitle: Text(widget.order.ssAdres.isEmpty ? 'Adres bulunamadı' : widget.order.ssAdres),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Sipariş detayları kartı
+  Widget _buildOrderDetailsCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Sipariş Detayı',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.confirmation_number, color: Colors.blue),
+              title: const Text('Sipariş No'),
+              subtitle: Text('#${widget.order.sId}'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.note, color: Colors.orange),
+              title: const Text('Açıklama'),
+              subtitle: Text(widget.order.ssNote.isEmpty ? 'Yok' : widget.order.ssNote),
+            ),
+            ListTile(
+              leading: const Icon(Icons.navigation, color: Colors.red),
+              title: const Text('Tahmini Mesafe'),
+              subtitle: Text('${widget.order.sDinstance} KM'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Onay butonları (Kabul/Reddet)
+  Widget _buildApprovalButtons() {
+    return Column(
+      children: [
+        const Text(
+          '🔔 Sipariş Onayı Bekleniyor',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: Colors.blue,
+          ),
+        ),
+        const SizedBox(height: 8),
+        // ⏰ Countdown göstergesi
+        if (_remainingTime != null && _remainingTime! > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: _remainingTime! > 30 ? Colors.orange : Colors.red,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.timer, color: Colors.white, size: 16),
+                const SizedBox(width: 4),
+                Text(
+                  '${_remainingTime! ~/ 60}:${(_remainingTime! % 60).toString().padLeft(2, '0')}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 8),
+        const Text(
+          'Bu siparişi kabul ediyor musunuz?',
+          style: TextStyle(color: Colors.grey),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _isProcessing ? null : _acceptOrder,
+                icon: const Icon(Icons.check_circle),
+                label: _isProcessing
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('KABUL ET'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.all(16),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _isProcessing ? null : _rejectOrder,
+                icon: const Icon(Icons.cancel),
+                label: const Text('REDDET'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.all(16),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Teslim butonu
+  /// ⏰ Teslim Al / Teslim Et butonu (2 dakika kontrolü ile)
+  Widget _buildDeliveryButtonWithTimeCheck(String buttonText) {
+    // ⭐ 2 dakika kontrolü
+    bool isButtonEnabled = true;
+    int? remainingSeconds;
+    String? waitMessage;
+
+    if (widget.order.sStat == 0) {
+      // Onayla → Teslim Al: sCourierResponseTime kontrolü
+      if (widget.order.sCourierResponseTime != null) {
+        final timeDiff = DateTime.now().difference(widget.order.sCourierResponseTime!);
+        final requiredMinutes = 2;
+        if (timeDiff.inMinutes < requiredMinutes) {
+          isButtonEnabled = false;
+          remainingSeconds = (requiredMinutes * 60) - timeDiff.inSeconds;
+          final remainingMinutes = remainingSeconds ~/ 60;
+          final remainingSecs = remainingSeconds % 60;
+          waitMessage = '$remainingMinutes:${remainingSecs.toString().padLeft(2, '0')}';
+        }
+      }
+    } else if (widget.order.sStat == 1) {
+      // Teslim Al → Teslim Et: sReceived kontrolü
+      if (widget.order.sReceived != null) {
+        final timeDiff = DateTime.now().difference(widget.order.sReceived!);
+        final requiredMinutes = 2;
+        if (timeDiff.inMinutes < requiredMinutes) {
+          isButtonEnabled = false;
+          remainingSeconds = (requiredMinutes * 60) - timeDiff.inSeconds;
+          final remainingMinutes = remainingSeconds ~/ 60;
+          final remainingSecs = remainingSeconds % 60;
+          waitMessage = '$remainingMinutes:${remainingSecs.toString().padLeft(2, '0')}';
+        }
+      }
+    }
+
+    return ElevatedButton.icon(
+      onPressed: (_isProcessing || !isButtonEnabled) ? null : _updateOrderStatus,
+      icon: _isProcessing
+          ? const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                color: Colors.white,
+                strokeWidth: 2,
+              ),
+            )
+          : const Icon(Icons.check_circle),
+      label: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(buttonText),
+          if (!isButtonEnabled && waitMessage != null)
+            Text(
+              '⏰ $waitMessage',
+              style: const TextStyle(fontSize: 10),
+            ),
+        ],
+      ),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isButtonEnabled ? Colors.blue : Colors.grey,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.all(16),
+      ),
+    );
+  }
+
+  Widget _buildDeliveryButton() {
+    final paymentTypeText = widget.order.ssPaytype == 0
+        ? 'Kapıda Nakit'
+        : widget.order.ssPaytype == 1
+            ? 'Kapıda Kredi'
+            : 'Online Ödeme';
+
+    final buttonText = widget.order.sStat == 0 ? 'TESLİM AL' : 'TESLİM ET';
+
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.payment, color: Colors.blue, size: 18),
+                  const SizedBox(width: 8),
+                  const Text('Ödeme Türü', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+              Text(
+                paymentTypeText,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.attach_money, color: Colors.blue, size: 18),
+                  const SizedBox(width: 8),
+                  const Text('Tutar', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+              Text(
+                '₺${widget.order.ssPaycount.toStringAsFixed(2)}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 16),
+        _buildDeliveryButtonWithTimeCheck(buttonText),
+      ],
+    );
+  }
+}
+
