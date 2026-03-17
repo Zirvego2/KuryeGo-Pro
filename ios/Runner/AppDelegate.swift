@@ -95,6 +95,36 @@ import AVFoundation
     // Firebase mesajını işle
     Messaging.messaging().appDidReceiveMessage(userInfo)
     
+    // ⭐ iOS Custom Sound Fix: Background'da custom sound ile local notification göster
+    if #available(iOS 10.0, *) {
+      let aps = userInfo["aps"] as? [String: Any]
+      let alert = aps?["alert"] as? [String: Any]
+      let title = alert?["title"] as? String ?? userInfo["gcm.notification.title"] as? String ?? "Yeni Sipariş"
+      let body = alert?["body"] as? String ?? userInfo["gcm.notification.body"] as? String ?? "Yeni bir sipariş atandı"
+      
+      let content = UNMutableNotificationContent()
+      content.title = title
+      content.body = body
+      content.sound = UNNotificationSound(named: UNNotificationSoundName("order_notification.caf"))
+      content.categoryIdentifier = "orders2"
+      content.badge = NSNumber(value: UIApplication.shared.applicationIconBadgeNumber + 1)
+      content.userInfo = userInfo
+      
+      let request = UNNotificationRequest(
+        identifier: "custom_sound_\(UUID().uuidString)",
+        content: content,
+        trigger: nil
+      )
+      
+      UNUserNotificationCenter.current().add(request) { error in
+        if let error = error {
+          print("❌ Custom sound notification eklenirken hata: \(error.localizedDescription)")
+        } else {
+          print("✅ Custom sound notification eklendi: order_notification.caf")
+        }
+      }
+    }
+    
     // Background fetch sonucunu bildir
     completionHandler(.newData)
   }
@@ -116,6 +146,40 @@ import AVFoundation
     
     // Firebase mesajını işle
     Messaging.messaging().appDidReceiveMessage(userInfo)
+    
+    // ⭐ iOS Custom Sound Fix: Notification content'i modify et
+    let content = notification.request.content.mutableCopy() as! UNMutableNotificationContent
+    
+    // Eğer sound yoksa veya default ise, custom sound ekle
+    if content.sound == nil || content.sound == UNNotificationSound.default {
+      // Custom sound dosyasını kontrol et
+      if let soundPath = Bundle.main.path(forResource: "order_notification", ofType: "caf") {
+        content.sound = UNNotificationSound(named: UNNotificationSoundName("order_notification.caf"))
+        print("✅ Custom sound eklendi: order_notification.caf")
+      } else {
+        print("⚠️ Custom sound dosyası bulunamadı: order_notification.caf")
+      }
+    }
+    
+    // Category'yi set et (orders2)
+    if content.categoryIdentifier.isEmpty {
+      content.categoryIdentifier = "orders2"
+    }
+    
+    // Modified notification'ı yeniden schedule et
+    let modifiedRequest = UNNotificationRequest(
+      identifier: notification.request.identifier + "_modified",
+      content: content,
+      trigger: nil
+    )
+    
+    center.add(modifiedRequest) { error in
+      if let error = error {
+        print("❌ Modified notification eklenirken hata: \(error.localizedDescription)")
+      } else {
+        print("✅ Modified notification eklendi (custom sound ile)")
+      }
+    }
     
     // iOS 14+ için yeni API - Bildirim göster ve ses çal
     if #available(iOS 14.0, *) {
