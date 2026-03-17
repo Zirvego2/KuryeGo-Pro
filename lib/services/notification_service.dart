@@ -363,7 +363,7 @@ class NotificationService {
                 presentAlert: true,
                 presentBadge: true,
                 presentSound: shouldPlaySound,
-                sound: shouldPlaySound ? 'order_notification.mp3' : null,
+                sound: shouldPlaySound ? 'order_notification.caf' : null,
                 categoryIdentifier: 'orders2',
               ),
             ),
