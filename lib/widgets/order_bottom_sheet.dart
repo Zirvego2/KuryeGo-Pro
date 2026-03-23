@@ -1,13 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 import '../models/order_model.dart';
 import '../services/firebase_service.dart';
 import '../services/platform_api_service.dart';
 import '../services/sms_service.dart';
 import '../services/javipos_api_service.dart';
 import '../utils/payment_change_logger.dart';
+import '../utils/network_utils.dart';
 import '../services/courier_cash_transaction_service.dart';
 
 /// Sipariş Detay Modal (Bottom Sheet)
@@ -241,9 +245,194 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
     }
   }
 
+  /// ⭐ Work'ten POS entegrasyon bilgisini çek
+  Future<Map<String, dynamic>?> _getWorkPosIntegration(int workId) async {
+    try {
+      // 1. workId kontrolü
+      if (workId <= 0) {
+        print('⚠️ Work ID geçersiz: $workId');
+        return null;
+      }
+      
+      // 2. t_work dokümanını çek
+      final workQuery = await FirebaseFirestore.instance
+          .collection('t_work')
+          .where('s_id', isEqualTo: workId)
+          .limit(1)
+          .get();
+      
+      if (workQuery.docs.isEmpty) {
+        print('⚠️ Work bulunamadı: $workId');
+        return null;
+      }
+      
+      // 3. s_pos_integration kontrolü
+      final workData = workQuery.docs.first.data();
+      final posIntegration = workData['s_pos_integration'];
+      
+      if (posIntegration == null) {
+        print('ℹ️ Work $workId için s_pos_integration bilgisi yok');
+        return null;
+      }
+      
+      // 4. Map kontrolü
+      if (posIntegration is! Map<String, dynamic>) {
+        print('⚠️ s_pos_integration map formatında değil');
+        return null;
+      }
+      
+      // 5. active kontrolü
+      final active = posIntegration['active'] as bool? ?? false;
+      if (!active) {
+        print('ℹ️ Work $workId için POS entegrasyon aktif değil');
+        return null;
+      }
+      
+      // 6. Gerekli alanlar kontrolü
+      final url = posIntegration['url'] as String?;
+      final key = posIntegration['key'] as String?;
+      
+      if (url == null || url.isEmpty || key == null || key.isEmpty) {
+        print('⚠️ Work $workId için url veya key eksik');
+        return null;
+      }
+      
+      print('✅ POS entegrasyon bilgisi bulundu: ${posIntegration['name']}');
+      return posIntegration;
+      
+    } catch (e) {
+      print('❌ POS entegrasyon bilgisi çekilirken hata: $e');
+      return null; // Hata olsa bile null döndür, ana işlem devam etsin
+    }
+  }
+
+  /// ⭐ URL formatını düzelt (sonunda / varsa kaldır)
+  String _normalizeUrl(String url) {
+    url = url.trim();
+    // Sonunda / varsa kaldır
+    if (url.endsWith('/')) {
+      url = url.substring(0, url.length - 1);
+    }
+    return url;
+  }
+
+  /// ⭐ POS entegrasyon API çağrısı
+  Future<bool> _callPosIntegrationApi({
+    required String url,
+    required String apiKey,
+    required String orderId,
+    required int orderStatus, // 3 = Yola Çıkar, 4 = Teslim Edildi
+    Map<String, dynamic>? additionalData, // order_payment gibi ek alanlar
+  }) async {
+    try {
+      // 1. URL kontrolü
+      if (url.isEmpty) {
+        print('⚠️ POS entegrasyon URL boş');
+        return false;
+      }
+      
+      // 2. API Key kontrolü
+      if (apiKey.isEmpty) {
+        print('⚠️ POS entegrasyon API Key boş');
+        return false;
+      }
+      
+      // 3. OrderId kontrolü
+      if (orderId.isEmpty) {
+        print('⚠️ Order ID (s_pid) boş');
+        return false;
+      }
+      
+      // 4. Endpoint oluştur
+      final normalizedUrl = _normalizeUrl(url);
+      final normalizedLower = normalizedUrl.toLowerCase();
+      final endpoint = normalizedLower.endsWith('/v1/couries')
+          ? '$normalizedUrl/$orderId'
+          : '$normalizedUrl/v1/couries/$orderId';
+      
+      // 5. Request body oluştur
+      final bodyMap = <String, dynamic>{
+        'order_status': orderStatus,
+      };
+      
+      // 6. Ek veriler varsa ekle (order_payment gibi)
+      if (additionalData != null) {
+        bodyMap.addAll(additionalData);
+      }
+      
+      final body = json.encode(bodyMap);
+      
+      // 7. Headers
+      final headers = {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+      };
+      
+      // 8. POST isteği
+      print('🚀 POS Entegrasyon API çağrılıyor...');
+      print('   Endpoint: $endpoint');
+      print('   Order ID: $orderId');
+      print('   Status: $orderStatus');
+      print('   Body: $body');
+      
+      final response = await http.post(
+        Uri.parse(endpoint),
+        headers: headers,
+        body: body,
+      ).timeout(const Duration(seconds: 10));
+      
+      // 9. Response logla (ham + parse edilmiş)
+      final rawBody = response.body.trim();
+      print('📨 POS entegrasyon API dönüşü alındı');
+      print('   Status Code: ${response.statusCode}');
+      print('   Reason: ${response.reasonPhrase ?? "-"}');
+      print('   Headers: ${response.headers}');
+      if (rawBody.isEmpty) {
+        print('   Body: <empty>');
+      } else {
+        print('   Raw Body: $rawBody');
+        try {
+          final decoded = json.decode(rawBody);
+          print('   Parsed Body: $decoded');
+        } catch (_) {
+          print('   Parsed Body: <json parse edilemedi>');
+        }
+      }
+      
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        print('✅ POS entegrasyon API başarılı');
+        return true;
+      } else {
+        print('⚠️ POS entegrasyon API hatası: ${response.statusCode}');
+        return false;
+      }
+      
+    } on TimeoutException catch (e) {
+      print('❌ POS entegrasyon API timeout: $e');
+      return false;
+    } on SocketException catch (e) {
+      print('❌ POS entegrasyon API ağ hatası: $e');
+      return false;
+    } catch (e) {
+      print('❌ POS entegrasyon API çağrısı hatası: $e');
+      return false; // Hata olsa bile ana işlem devam etsin
+    }
+  }
 
   /// Teslim al/Teslim et
   Future<void> _updateOrderStatus() async {
+    final hasInternet = await NetworkUtils.hasInternetConnection();
+    if (!hasInternet) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ İnternet bağlantısı yok. Lütfen bağlantınızı kontrol edin.'),
+          ),
+        );
+      }
+      return;
+    }
+
     if (widget.order.sStat == 0) {
       // TESLIM AL
       // Onay kontrolü (eğer onay sistemi aktifse)
@@ -265,6 +454,9 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
           1,
           receivedTime: DateTime.now(),
         );
+
+        // Kurye için yeni alan: teslim alındığında yolda=true
+        await FirebaseService.updateCourierOnTheWay(widget.order.sCourier, true);
 
         // ⭐ 2. Tracking token'ı Firestore'a kaydet
         await FirebaseFirestore.instance
@@ -303,6 +495,35 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
         }).catchError((error) {
           print('❌ SMS gönderim hatası: $error');
         });
+
+        // ⭐ 4. POS Entegrasyon API çağrısı (Teslim Al - order_status = 3)
+        if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+          final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
+          if (posIntegration != null) {
+            final url = posIntegration['url'] as String;
+            final key = posIntegration['key'] as String;
+            final orderId = widget.order.sPid;
+            
+            // Async çağrı (await etmeden, arka planda çalışsın)
+            _callPosIntegrationApi(
+              url: url,
+              apiKey: key,
+              orderId: orderId,
+              orderStatus: 3, // Yola Çıkar
+              additionalData: null,
+            ).then((success) {
+              if (success) {
+                print('✅ POS entegrasyon API başarılı (Teslim Al)');
+              } else {
+                print('⚠️ POS entegrasyon API başarısız (Teslim Al) - Ana işlem devam ediyor');
+              }
+            }).catchError((error) {
+              print('❌ POS entegrasyon API hatası (Teslim Al): $error');
+            });
+          } else {
+            print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+          }
+        }
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -349,6 +570,9 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             deliveredTime: DateTime.now(),
           );
 
+          // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
+          await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
+
           // Platform API çağrısı (Teslim Et - Online)
           if (widget.order.sOrderscr >= 1 && widget.order.sOrderscr <= 4) {
             await PlatformApiService.callPlatformDeliveryApi(
@@ -368,6 +592,37 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             );
           } else {
             print('⚠️ JaviPos API (Teslim Et - Online): JaviPosid veya ClientId eksik');
+          }
+
+          // ⭐ POS Entegrasyon API çağrısı (Teslim Et - Online - order_status = 4)
+          if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+            final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
+            if (posIntegration != null) {
+              final url = posIntegration['url'] as String;
+              final key = posIntegration['key'] as String;
+              final orderId = widget.order.sPid;
+              
+              // Async çağrı (await etmeden, arka planda çalışsın)
+              _callPosIntegrationApi(
+                url: url,
+                apiKey: key,
+                orderId: orderId,
+                orderStatus: 4, // Teslim Edildi
+                additionalData: {
+                  'order_payment': null,
+                },
+              ).then((success) {
+                if (success) {
+                  print('✅ POS entegrasyon API başarılı (Teslim Et - Online)');
+                } else {
+                  print('⚠️ POS entegrasyon API başarısız (Teslim Et - Online) - Ana işlem devam ediyor');
+                }
+              }).catchError((error) {
+                print('❌ POS entegrasyon API hatası (Teslim Et - Online): $error');
+              });
+            } else {
+              print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+            }
           }
 
           if (mounted) {
@@ -459,6 +714,9 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             },
           );
 
+          // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
+          await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
+
           // ⭐ Nakit transaction kaydı oluştur (eğer nakit ödeme varsa)
           if (cash > 0) {
             await CourierCashTransactionService.createCashTransaction(
@@ -506,6 +764,37 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             );
           } else {
             print('⚠️ JaviPos API (Teslim Et - Kapıda Ödeme): JaviPosid veya ClientId eksik');
+          }
+
+          // ⭐ POS Entegrasyon API çağrısı (Teslim Et - Kapıda Ödeme - order_status = 4)
+          if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+            final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
+            if (posIntegration != null) {
+              final url = posIntegration['url'] as String;
+              final key = posIntegration['key'] as String;
+              final orderId = widget.order.sPid;
+              
+              // Async çağrı (await etmeden, arka planda çalışsın)
+              _callPosIntegrationApi(
+                url: url,
+                apiKey: key,
+                orderId: orderId,
+                orderStatus: 4, // Teslim Edildi
+                additionalData: {
+                  'order_payment': null,
+                },
+              ).then((success) {
+                if (success) {
+                  print('✅ POS entegrasyon API başarılı (Teslim Et - Kapıda Ödeme)');
+                } else {
+                  print('⚠️ POS entegrasyon API başarısız (Teslim Et - Kapıda Ödeme) - Ana işlem devam ediyor');
+                }
+              }).catchError((error) {
+                print('❌ POS entegrasyon API hatası (Teslim Et - Kapıda Ödeme): $error');
+              });
+            } else {
+              print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+            }
           }
 
           if (mounted) {
@@ -1341,20 +1630,7 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
     int? remainingSeconds;
     String? waitMessage;
 
-    if (widget.order.sStat == 0) {
-      // Onayla → Teslim Al: sCourierResponseTime kontrolü
-      if (widget.order.sCourierResponseTime != null) {
-        final timeDiff = DateTime.now().difference(widget.order.sCourierResponseTime!);
-        final requiredMinutes = 2;
-        if (timeDiff.inMinutes < requiredMinutes) {
-          isButtonEnabled = false;
-          remainingSeconds = (requiredMinutes * 60) - timeDiff.inSeconds;
-          final remainingMinutes = remainingSeconds ~/ 60;
-          final remainingSecs = remainingSeconds % 60;
-          waitMessage = '$remainingMinutes:${remainingSecs.toString().padLeft(2, '0')}';
-        }
-      }
-    } else if (widget.order.sStat == 1) {
+    if (widget.order.sStat == 1) {
       // Teslim Al → Teslim Et: sReceived kontrolü
       if (widget.order.sReceived != null) {
         final timeDiff = DateTime.now().difference(widget.order.sReceived!);

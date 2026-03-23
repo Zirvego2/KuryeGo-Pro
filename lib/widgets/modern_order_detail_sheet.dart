@@ -1,14 +1,18 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import '../models/order_model.dart';
 import '../services/firebase_service.dart';
 import '../services/platform_api_service.dart';
 import '../services/sms_service.dart';
 import '../services/javipos_api_service.dart';
 import '../services/courier_cash_transaction_service.dart';
+import '../utils/network_utils.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// 🎨 Modern & Kurumsal Sipariş Detay Sayfası (9. Düzeltme)
@@ -294,7 +298,191 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     }
   }
 
+  /// ⭐ Work'ten POS entegrasyon bilgisini çek
+  Future<Map<String, dynamic>?> _getWorkPosIntegration(int workId) async {
+    try {
+      // 1. workId kontrolü
+      if (workId <= 0) {
+        print('⚠️ Work ID geçersiz: $workId');
+        return null;
+      }
+      
+      // 2. t_work dokümanını çek
+      final workQuery = await FirebaseFirestore.instance
+          .collection('t_work')
+          .where('s_id', isEqualTo: workId)
+          .limit(1)
+          .get();
+      
+      if (workQuery.docs.isEmpty) {
+        print('⚠️ Work bulunamadı: $workId');
+        return null;
+      }
+      
+      // 3. s_pos_integration kontrolü
+      final workData = workQuery.docs.first.data();
+      final posIntegration = workData['s_pos_integration'];
+      
+      if (posIntegration == null) {
+        print('ℹ️ Work $workId için s_pos_integration bilgisi yok');
+        return null;
+      }
+      
+      // 4. Map kontrolü
+      if (posIntegration is! Map<String, dynamic>) {
+        print('⚠️ s_pos_integration map formatında değil');
+        return null;
+      }
+      
+      // 5. active kontrolü
+      final active = posIntegration['active'] as bool? ?? false;
+      if (!active) {
+        print('ℹ️ Work $workId için POS entegrasyon aktif değil');
+        return null;
+      }
+      
+      // 6. Gerekli alanlar kontrolü
+      final url = posIntegration['url'] as String?;
+      final key = posIntegration['key'] as String?;
+      
+      if (url == null || url.isEmpty || key == null || key.isEmpty) {
+        print('⚠️ Work $workId için url veya key eksik');
+        return null;
+      }
+      
+      print('✅ POS entegrasyon bilgisi bulundu: ${posIntegration['name']}');
+      return posIntegration;
+      
+    } catch (e) {
+      print('❌ POS entegrasyon bilgisi çekilirken hata: $e');
+      return null; // Hata olsa bile null döndür, ana işlem devam etsin
+    }
+  }
+
+  /// ⭐ URL formatını düzelt (sonunda / varsa kaldır)
+  String _normalizeUrl(String url) {
+    url = url.trim();
+    // Sonunda / varsa kaldır
+    if (url.endsWith('/')) {
+      url = url.substring(0, url.length - 1);
+    }
+    return url;
+  }
+
+  /// ⭐ POS entegrasyon API çağrısı
+  Future<bool> _callPosIntegrationApi({
+    required String url,
+    required String apiKey,
+    required String orderId,
+    required int orderStatus, // 3 = Yola Çıkar, 4 = Teslim Edildi
+    Map<String, dynamic>? additionalData, // order_payment gibi ek alanlar
+  }) async {
+    try {
+      // 1. URL kontrolü
+      if (url.isEmpty) {
+        print('⚠️ POS entegrasyon URL boş');
+        return false;
+      }
+      
+      // 2. API Key kontrolü
+      if (apiKey.isEmpty) {
+        print('⚠️ POS entegrasyon API Key boş');
+        return false;
+      }
+      
+      // 3. OrderId kontrolü
+      if (orderId.isEmpty) {
+        print('⚠️ Order ID (s_pid) boş');
+        return false;
+      }
+      
+      // 4. Endpoint oluştur
+      final normalizedUrl = _normalizeUrl(url);
+      final normalizedLower = normalizedUrl.toLowerCase();
+      final endpoint = normalizedLower.endsWith('/v1/couries')
+          ? '$normalizedUrl/$orderId'
+          : '$normalizedUrl/v1/couries/$orderId';
+      
+      // 5. Request body oluştur
+      final bodyMap = <String, dynamic>{
+        'order_status': orderStatus,
+      };
+      
+      // 6. Ek veriler varsa ekle (order_payment gibi)
+      if (additionalData != null) {
+        bodyMap.addAll(additionalData);
+      }
+      
+      final body = json.encode(bodyMap);
+      
+      // 7. Headers
+      final headers = {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+      };
+      
+      // 8. POST isteği
+      print('🚀 POS Entegrasyon API çağrılıyor...');
+      print('   Endpoint: $endpoint');
+      print('   Order ID: $orderId');
+      print('   Status: $orderStatus');
+      print('   Body: $body');
+      
+      final response = await http.post(
+        Uri.parse(endpoint),
+        headers: headers,
+        body: body,
+      ).timeout(const Duration(seconds: 10));
+      
+      // 9. Response logla (ham + parse edilmiş)
+      final rawBody = response.body.trim();
+      print('📨 POS entegrasyon API dönüşü alındı');
+      print('   Status Code: ${response.statusCode}');
+      print('   Reason: ${response.reasonPhrase ?? "-"}');
+      print('   Headers: ${response.headers}');
+      if (rawBody.isEmpty) {
+        print('   Body: <empty>');
+      } else {
+        print('   Raw Body: $rawBody');
+        try {
+          final decoded = json.decode(rawBody);
+          print('   Parsed Body: $decoded');
+        } catch (_) {
+          print('   Parsed Body: <json parse edilemedi>');
+        }
+      }
+      
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        print('✅ POS entegrasyon API başarılı');
+        return true;
+      } else {
+        print('⚠️ POS entegrasyon API hatası: ${response.statusCode}');
+        return false;
+      }
+      
+    } on TimeoutException catch (e) {
+      print('❌ POS entegrasyon API timeout: $e');
+      return false;
+    } on SocketException catch (e) {
+      print('❌ POS entegrasyon API ağ hatası: $e');
+      return false;
+    } catch (e) {
+      print('❌ POS entegrasyon API çağrısı hatası: $e');
+      return false; // Hata olsa bile ana işlem devam etsin
+    }
+  }
+
   Future<void> _pickupOrder() async {
+    final hasInternet = await NetworkUtils.hasInternetConnection();
+    if (!hasInternet) {
+      if (mounted) {
+        _showTopRightNotification(
+          '⚠️ İnternet bağlantısı yok. Lütfen bağlantınızı kontrol edin.',
+        );
+      }
+      return;
+    }
+
     setState(() => _isProcessing = true);
     try {
       // ⭐ 1. Tracking Token Oluştur (unique)
@@ -309,6 +497,9 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         's_received': Timestamp.now(),
         's_tracking_token': trackingToken, // ⭐ Tracking token ekle
       });
+
+      // Kurye için yeni alan: teslim alındığında yolda=true
+      await FirebaseService.updateCourierOnTheWay(widget.order.sCourier, true);
 
       // ⭐ 3. Posentegra API çağrısı (Teslim Al - 1. adım)
       if (widget.order.sOrderscr != 0) {
@@ -352,6 +543,35 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         print('❌ SMS gönderim hatası: $error');
       });
 
+      // ⭐ 5. POS Entegrasyon API çağrısı (Teslim Al - order_status = 3)
+      if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+        final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
+        if (posIntegration != null) {
+          final url = posIntegration['url'] as String;
+          final key = posIntegration['key'] as String;
+          final orderId = widget.order.sPid;
+          
+          // Async çağrı (await etmeden, arka planda çalışsın)
+          _callPosIntegrationApi(
+            url: url,
+            apiKey: key,
+            orderId: orderId,
+            orderStatus: 3, // Yola Çıkar
+            additionalData: null,
+          ).then((success) {
+            if (success) {
+              print('✅ POS entegrasyon API başarılı (Teslim Al)');
+            } else {
+              print('⚠️ POS entegrasyon API başarısız (Teslim Al) - Ana işlem devam ediyor');
+            }
+          }).catchError((error) {
+            print('❌ POS entegrasyon API hatası (Teslim Al): $error');
+          });
+        } else {
+          print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+        }
+      }
+
       if (mounted) {
         Navigator.pop(context);
         _showTopRightNotification('✅ Sipariş teslim alındı!', isSuccess: true);
@@ -367,6 +587,16 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
 
   /// 💰 Ödeme yöntemi doğrulama ve teslim
   Future<void> _deliverOrder() async {
+    final hasInternet = await NetworkUtils.hasInternetConnection();
+    if (!hasInternet) {
+      if (mounted) {
+        _showTopRightNotification(
+          '⚠️ İnternet bağlantısı yok. Lütfen bağlantınızı kontrol edin.',
+        );
+      }
+      return;
+    }
+
     // ⭐ Önce ödeme doğrulama dialogu göster
     final confirmed = await _showPaymentConfirmationDialog();
     
@@ -448,8 +678,42 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         print('⚠️ JaviPos API (Teslim Et): JaviPosid veya ClientId eksik');
       }
 
+      // ⭐ POS Entegrasyon API çağrısı (Teslim Et - order_status = 4)
+      if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+        final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
+        if (posIntegration != null) {
+          final url = posIntegration['url'] as String;
+          final key = posIntegration['key'] as String;
+          final orderId = widget.order.sPid;
+          
+          // Async çağrı (await etmeden, arka planda çalışsın)
+          _callPosIntegrationApi(
+            url: url,
+            apiKey: key,
+            orderId: orderId,
+            orderStatus: 4, // Teslim Edildi
+            additionalData: {
+              'order_payment': null,
+            },
+          ).then((success) {
+            if (success) {
+              print('✅ POS entegrasyon API başarılı (Teslim Et)');
+            } else {
+              print('⚠️ POS entegrasyon API başarısız (Teslim Et) - Ana işlem devam ediyor');
+            }
+          }).catchError((error) {
+            print('❌ POS entegrasyon API hatası (Teslim Et): $error');
+          });
+        } else {
+          print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+        }
+      }
+
       // ⭐ Kurye durumunu güncelle: Başka aktif siparişi varsa meşgul, yoksa müsait
       await _updateCourierStatusAfterDelivery(widget.order.sCourier);
+
+      // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
+      await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
 
       if (mounted) {
         Navigator.pop(context);
@@ -523,6 +787,15 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     double newCash = currentCash;
     double newCard = currentCard;
     double newOnline = currentOnline;
+    final isCashOrCardOrder =
+        currentPaymentType == 0 || currentPaymentType == 1;
+    bool isSplitPayment = false;
+    final splitCashController = TextEditingController(
+      text: currentCash.toStringAsFixed(2),
+    );
+    final splitCardController = TextEditingController(
+      text: currentCard.toStringAsFixed(2),
+    );
     int? cardPaymentMethod; // null, 1=Pos Cihazı, 2=NFC
 
     return await showDialog<bool>(
@@ -560,7 +833,10 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                   ),
                 ],
               ),
-              content: SingleChildScrollView(
+              content: GestureDetector(
+                onTap: () => FocusScope.of(context).unfocus(),
+                behavior: HitTestBehavior.opaque,
+                child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -647,6 +923,10 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                           newCash = currentTotal;
                           newCard = 0;
                           newOnline = 0;
+                          isSplitPayment = false;
+                          splitCashController.text = currentTotal.toStringAsFixed(2);
+                          splitCardController.text = '0.00';
+                          cardPaymentMethod = null;
                         });
                       },
                     ),
@@ -666,13 +946,154 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                           newCash = 0;
                           newCard = currentTotal;
                           newOnline = 0;
+                          isSplitPayment = false;
+                          splitCashController.text = '0.00';
+                          splitCardController.text = currentTotal.toStringAsFixed(2);
                           cardPaymentMethod = null; // Reset card payment method
                         });
                       },
                     ),
+
+                    if (isCashOrCardOrder) ...[
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            final initialCash = (isSplitPayment ? newCash : currentCash)
+                                .clamp(0, currentTotal)
+                                .toDouble();
+                            final modalCashController = TextEditingController(
+                              text: initialCash.toStringAsFixed(2),
+                            );
+                            double enteredCash = initialCash;
+
+                            final result = await showDialog<double>(
+                              context: context,
+                              builder: (modalContext) {
+                                return StatefulBuilder(
+                                  builder: (modalContext, setModalState) {
+                                    final autoCard = (currentTotal - enteredCash).clamp(0, currentTotal);
+                                    return AlertDialog(
+                                      title: const Text('Parçalı Ödeme Al'),
+                                      content: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          TextField(
+                                            controller: modalCashController,
+                                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                            textInputAction: TextInputAction.done,
+                                            inputFormatters: [
+                                              FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                                            ],
+                                            onChanged: (value) {
+                                              setModalState(() {
+                                                final parsed =
+                                                    double.tryParse(value.replaceAll(',', '.')) ?? 0;
+                                                enteredCash = parsed.clamp(0, currentTotal).toDouble();
+                                              });
+                                            },
+                                            decoration: const InputDecoration(
+                                              labelText: 'Alınan Nakit',
+                                              hintText: 'Ornek: 300',
+                                              prefixIcon: Icon(Icons.money),
+                                              border: OutlineInputBorder(),
+                                              isDense: true,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 10),
+                                          Container(
+                                            width: double.infinity,
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: Colors.blue.shade50,
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(color: Colors.blue.shade200),
+                                            ),
+                                            child: Text(
+                                              'Kart (Otomatik): ${autoCard.toStringAsFixed(2)} ₺',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(modalContext),
+                                          child: const Text('Vazgeç'),
+                                        ),
+                                        ElevatedButton(
+                                          onPressed: () {
+                                            final cash = double.tryParse(
+                                                  modalCashController.text.replaceAll(',', '.'),
+                                                ) ??
+                                                -1;
+                                            if (cash < 0 || cash > currentTotal) {
+                                              _showTopRightNotification(
+                                                'Nakit tutarı 0 ile ${currentTotal.toStringAsFixed(2)} arasında olmalı',
+                                              );
+                                              return;
+                                            }
+                                            Navigator.pop(modalContext, cash);
+                                          },
+                                          child: const Text('Uygula'),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+                              },
+                            );
+
+                            if (result == null) return;
+                            setDialogState(() {
+                              isSplitPayment = true;
+                              selectedPaymentType = 3; // Karma ödeme
+                              newCash = result;
+                              newCard = (currentTotal - result).toDouble();
+                              newOnline = 0;
+                              splitCashController.text = newCash.toStringAsFixed(2);
+                              splitCardController.text = newCard.toStringAsFixed(2);
+                              if (newCard <= 0) {
+                                cardPaymentMethod = null;
+                              }
+                            });
+                          },
+                          icon: const Icon(Icons.splitscreen),
+                          label: Text(
+                            isSplitPayment
+                                ? 'Parçalı Ödeme Düzenle'
+                                : 'Parçalı Ödeme Al',
+                          ),
+                        ),
+                      ),
+                    ],
+
+                    if (isSplitPayment) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.green.shade200),
+                        ),
+                        child: Text(
+                          'Alınan Ödeme\nNakit: ${newCash.toStringAsFixed(2)} ₺\nKart: ${newCard.toStringAsFixed(2)} ₺',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
                     
-                    // ⭐ Kart ödeme yöntemi seçimi (sadece kart seçildiğinde göster)
-                    if (selectedPaymentType == 1) ...[
+                    // ⭐ Kart ödeme yöntemi seçimi (kart payı varsa göster)
+                    if (selectedPaymentType == 1 || (isSplitPayment && newCard > 0)) ...[
                       const SizedBox(height: 10),
                       Container(
                         padding: const EdgeInsets.all(8),
@@ -835,6 +1256,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                   ],
                 ),
               ),
+              ),
               actions: [
                 // İptal
                 TextButton(
@@ -848,8 +1270,33 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                 // Onayla ve Teslim Et
                 ElevatedButton(
                   onPressed: () async {
+                    if (isSplitPayment) {
+                      final splitCash = newCash;
+                      final splitCard = newCard;
+                      final splitTotal = splitCash + splitCard;
+
+                      if (splitCash < 0 || splitCard < 0) {
+                        _showTopRightNotification('Nakit ve kart tutarı 0 veya daha büyük olmalıdır');
+                        return;
+                      }
+
+                      if ((splitTotal - currentTotal).abs() > 0.01) {
+                        _showTopRightNotification(
+                          'Toplam eşleşmeli: Nakit + Kart = ${currentTotal.toStringAsFixed(2)} ₺',
+                        );
+                        return;
+                      }
+
+                      newCash = splitCash;
+                      newCard = splitCard;
+                      newOnline = 0;
+                      selectedPaymentType = 3; // Karma ödeme
+                    }
+
                     // ⭐ Kart ödeme seçildiyse yöntem kontrolü
-                    if (selectedPaymentType == 1 && cardPaymentMethod == null) {
+                    if ((selectedPaymentType == 1 ||
+                            (isSplitPayment && newCard > 0)) &&
+                        cardPaymentMethod == null) {
                       _showTopRightNotification('Lütfen kart ödeme yöntemini seçin (Pos Cihazı veya NFC)');
                       return;
                     }
@@ -880,7 +1327,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                       };
                       
                       // ⭐ Kart ödeme yöntemi ve tutarı ekle
-                      if (selectedPaymentType == 1 && cardPaymentMethod != null) {
+                      if ((selectedPaymentType == 1 || (isSplitPayment && newCard > 0)) &&
+                          cardPaymentMethod != null) {
                         updateData['s_pay.card_payment_method'] = cardPaymentMethod!;
                         updateData['s_pay.card_payment_amount'] = newCard;
                       }
@@ -889,7 +1337,9 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                           .collection('t_orders')
                           .doc(widget.order.docId)
                           .update(updateData);
-                    } else if (selectedPaymentType == 1 && cardPaymentMethod != null) {
+                    } else if ((selectedPaymentType == 1 ||
+                            (isSplitPayment && newCard > 0)) &&
+                        cardPaymentMethod != null) {
                       // ⭐ Ödeme tipi değişmedi ama kart yöntemi seçildi, sadece kart yöntemini kaydet
                       await FirebaseFirestore.instance
                           .collection('t_orders')
@@ -1040,6 +1490,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         0: 'Kapıda Nakit',
         1: 'Kapıda Kredi',
         2: 'Online Ödeme',
+        3: 'Parçalı Ödeme',
       };
 
       // Kurye adını ve bay adını al
@@ -1074,8 +1525,11 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       
       final changeCountToday = changeCountQuery.docs.length + 1; // +1 çünkü şu anki değişiklik henüz kaydedilmedi
 
-      // payment_changes koleksiyonuna kaydet (mevcut yapıya uygun)
-      await FirebaseFirestore.instance.collection('payment_changes').add({
+      // Sadece parçalı ödeme değişikliklerini ayrı koleksiyonda tut
+      final targetCollection =
+          newType == 3 ? 'payment_split_changes' : 'payment_changes';
+
+      await FirebaseFirestore.instance.collection(targetCollection).add({
         'app_version': '60.12.3', // Uygulama versiyonu
         'bay_id': null, // Null olarak kaydediliyor (mevcut yapıya uygun)
         'change_count_today': changeCountToday,
@@ -1109,7 +1563,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         'restaurant_name': _restaurantName, // Restoran adı (t_work'ten çekiliyor)
       });
 
-      print('💾 Ödeme değişikliği kaydedildi: $courierName tarafından');
+      print('💾 Ödeme değişikliği kaydedildi ($targetCollection): $courierName tarafından');
       print('   📊 Bugün yapılan toplam değişiklik: $changeCountToday');
     } catch (e) {
       print('❌ Ödeme değişikliği kaydetme hatası: $e');
@@ -2129,11 +2583,11 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
 
   Widget _buildCustomerCard() {
     // ⭐ Adres gizleme kontrolü: orderAddressVisibleAfterOrder ayarına göre
-    // - false ise: Onaydan ÖNCE adres görünür, onaydan SONRA adres gizli
-    // - true ise: Onaydan ÖNCE adres gizli, onaydan SONRA adres görünür
+    // - false ise: HER ZAMAN görünür (onay öncesi/sonrası)
+    // - true ise: Onaydan ÖNCE gizli, onaydan SONRA görünür
     // - null ise: Default olarak onaydan önce gizli (güvenli)
     final shouldHideAddress = _orderAddressVisibleAfterOrder == false
-        ? widget.order.sCourierAccepted == true  // false: onaydan önce görünür, onaydan sonra gizli
+        ? false  // false: her durumda görünür
         : _orderAddressVisibleAfterOrder == true
             ? widget.order.sCourierAccepted != true  // true: onaydan önce gizli, onaydan sonra görünür
             : widget.order.sCourierAccepted != true;  // null: default olarak onaydan önce gizli
@@ -2535,20 +2989,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     int? remainingSeconds;
     String? waitMessage;
 
-    if (isWaitingForPickup) {
-      // Onayla → Teslim Al: sCourierResponseTime kontrolü
-      if (widget.order.sCourierResponseTime != null) {
-        final timeDiff = DateTime.now().difference(widget.order.sCourierResponseTime!);
-        final requiredMinutes = 2;
-        if (timeDiff.inMinutes < requiredMinutes) {
-          isButtonEnabled = false;
-          remainingSeconds = (requiredMinutes * 60) - timeDiff.inSeconds;
-          final remainingMinutes = remainingSeconds ~/ 60;
-          final remainingSecs = remainingSeconds % 60;
-          waitMessage = '$remainingMinutes:${remainingSecs.toString().padLeft(2, '0')}';
-        }
-      }
-    } else if (isOnDelivery) {
+    if (isOnDelivery) {
       // Teslim Al → Teslim Et: sReceived kontrolü
       if (widget.order.sReceived != null) {
         final timeDiff = DateTime.now().difference(widget.order.sReceived!);

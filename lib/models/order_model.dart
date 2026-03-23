@@ -40,7 +40,9 @@ class OrderModel {
 
   // Onay sistemi
   final bool? sCourierAccepted;
-  final DateTime? sCourierResponseTime; // Kurye onay zamanı
+  final DateTime? sCourierResponseTime; // Kurye onay/red zamanı (geriye dönük)
+  final DateTime? sAcceptedAt;          // Onaylanma zamanı
+  final DateTime? sRejectedAt;          // Red zamanı
 
   // JaviPos API için
   final String? clientId; // ClientId (UserId için)
@@ -76,6 +78,8 @@ class OrderModel {
     required this.sDinstance,
     this.sCourierAccepted,
     this.sCourierResponseTime,
+    this.sAcceptedAt,
+    this.sRejectedAt,
     this.clientId,
     this.javiPosid,
   });
@@ -146,6 +150,12 @@ class OrderModel {
       sCourierAccepted: data['s_courier_accepted'],
       sCourierResponseTime: data['s_courier_response_time'] != null
           ? (data['s_courier_response_time'] as Timestamp).toDate()
+          : null,
+      sAcceptedAt: data['s_accepted_at'] != null
+          ? (data['s_accepted_at'] as Timestamp).toDate()
+          : null,
+      sRejectedAt: data['s_rejected_at'] != null
+          ? (data['s_rejected_at'] as Timestamp).toDate()
           : null,
       clientId: data['ClientId']?.toString(),
       javiPosid: data['JaviPosid']?.toString(),

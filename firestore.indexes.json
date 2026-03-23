@@ -51,38 +51,6 @@
       ]
     },
     {
-      "collectionGroup": "payment_changes",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "changed_by_courier_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "changed_at",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "t_courier_cash_history",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "courier_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "bay_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "settlement_date",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "t_orders",
       "queryScope": "COLLECTION",
       "fields": [
@@ -105,6 +73,66 @@
       ]
     },
     {
+      "collectionGroup": "t_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "s_bay",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "s_stat",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "payment_changes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "changed_by_courier_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "changed_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "payment_changes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "changed_by_courier_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "changed_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_cash_history",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "courier_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "bay_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "settlement_date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "t_courier_cash_transactions",
       "queryScope": "COLLECTION",
       "fields": [
@@ -149,8 +177,71 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "courier_daily_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "courierId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "shiftDate",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isClosed",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "courier_daily_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "courierId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isClosed",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_weekly_leave_plans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "courier_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "bay_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "is_active",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_pricing",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "s_bay",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "s_courier_id",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
 }
-

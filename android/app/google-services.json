@@ -1,0 +1,86 @@
+{
+  "project_info": {
+    "project_number": "147723250558",
+    "project_id": "zirvenew",
+    "storage_bucket": "zirvenew.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:147723250558:android:f4161a7804a464f3d2612f",
+        "android_client_info": {
+          "package_name": "com.Main.zirvego.kurye"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXl4g4O8iOs4L7acpSujJtjY1Sal93at4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:147723250558:android:d5d72819284e1804d2612f",
+        "android_client_info": {
+          "package_name": "com.ogzyldz.zirvegonew"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXl4g4O8iOs4L7acpSujJtjY1Sal93at4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:147723250558:android:fd4b84ce56b02053d2612f",
+        "android_client_info": {
+          "package_name": "com.zirvego.kurye"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXl4g4O8iOs4L7acpSujJtjY1Sal93at4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:147723250558:android:3de95ad9709abc10d2612f",
+        "android_client_info": {
+          "package_name": "com.zirvego.mainapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXl4g4O8iOs4L7acpSujJtjY1Sal93at4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

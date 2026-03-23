@@ -50,6 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _todayDeliveredCount = 0; // Bugün teslim edilen paket sayısı
   String _statusText = 'MÜSAİT';
   int _courierStatus = 1; // 0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza
+  bool _isOnTheWay = false; // t_courier.s_on_the_way
   int _bayId = 1; // Bay/Şube ID (varsayılan)
   
   // ⏰ Foreground location timer (debug/development için)
@@ -78,6 +79,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<int, int> _restaurantOrderCounts = {}; // Restoran ID -> Sipariş sayısı
   final Map<String, BitmapDescriptor> _restaurantMarkerIcons = {}; // Restoran marker icon cache (renk_sayı -> icon)
   StreamSubscription<QuerySnapshot>? _restaurantOrdersSubscription; // Kuryeye atanmamış siparişler stream'i
+  StreamSubscription? _ordersSubscription; // ⭐ Sipariş stream subscription
+  StreamSubscription<bool>? _courierOnTheWaySubscription;
 
   @override
   void initState() {
@@ -103,6 +106,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _foregroundLocationTimer?.cancel();
     _notificationAudioPlayer.dispose(); // ⭐ Audio player'ı temizle
     _restaurantOrdersSubscription?.cancel(); // ⭐ Restoran sipariş stream'ini iptal et
+    _ordersSubscription?.cancel(); // ⭐ Sipariş stream'ini iptal et
+    _courierOnTheWaySubscription?.cancel();
     
     // ⭐ Uygulama kapatılıyor flag'ini set et
     _setAppRunningFlag(false); // Uygulama kapandı
@@ -198,9 +203,22 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
 
+    // ⭐ Kurye yolda alanını dinle (s_on_the_way)
+    _courierOnTheWaySubscription = FirebaseService.watchCourierOnTheWay(_courierId!).listen(
+      (isOnTheWay) {
+        if (!mounted) return;
+        setState(() {
+          _isOnTheWay = isOnTheWay;
+        });
+      },
+      onError: (error) {
+        print('❌ s_on_the_way stream hatası: $error');
+      },
+    );
+
     // Siparişleri dinle (real-time)
     print('🎧 Sipariş stream başlatılıyor: Kurye ID = $_courierId');
-    FirebaseService.watchOrders(_courierId!).listen(
+    _ordersSubscription = FirebaseService.watchOrders(_courierId!).listen(
       (orders) {
         // ⭐ Async işlemler için Future'ı unawaited ile kullan
         _handleOrdersUpdate(orders);
@@ -2195,6 +2213,7 @@ class _HomeScreenState extends State<HomeScreen> {
             packageCount: _packageCount,
             statusText: _statusText,
             courierStatus: _courierStatus,
+            isOnTheWay: _isOnTheWay,
             courierId: _courierId ?? 0, // ⭐ Vardiya bilgisi için
             onShiftPressed: _showShiftDialog, // ⭐ Vardiya menüsü
             onProfilePressed: _openProfileMenu, // ⭐ Profil menüsü

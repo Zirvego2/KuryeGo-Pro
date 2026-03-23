@@ -7,6 +7,7 @@ class ModernHeader extends StatefulWidget {
   final int packageCount;
   final String statusText;
   final int courierStatus;
+  final bool isOnTheWay;
   final int courierId; // ⭐ Vardiya bilgisi için
   final VoidCallback onShiftPressed; // ⭐ Vardiya menüsü için
   final VoidCallback onProfilePressed;
@@ -17,6 +18,7 @@ class ModernHeader extends StatefulWidget {
     required this.packageCount,
     required this.statusText,
     required this.courierStatus,
+    required this.isOnTheWay,
     required this.courierId, // ⭐ Eklendi
     required this.onShiftPressed, // ⭐ Değişti
     required this.onProfilePressed,
@@ -212,6 +214,28 @@ class _ModernHeaderState extends State<ModernHeader> {
                                 letterSpacing: 0.8,
                               ),
                             ),
+                            if (widget.isOnTheWay) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF3E0),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: const Color(0xFFFF9800).withOpacity(0.5),
+                                  ),
+                                ),
+                                child: const Text(
+                                  'YOLDA',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFFE65100),
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ),
+                            ],
                             // ⭐ Vardiya bilgisi (sadece Müsait durumunda ve vardiya varsa)
                             if (widget.courierStatus == 1 && 
                                 _shiftInfo != null && 

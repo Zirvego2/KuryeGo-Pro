@@ -182,7 +182,8 @@ class FirebaseService {
     try {
       await db.collection('t_orders').doc(orderId).update({
         's_courier_accepted': true,
-        's_courier_response_time': Timestamp.now(),
+        's_courier_response_time': Timestamp.now(), // Geriye dönük uyumluluk
+        's_accepted_at': Timestamp.now(),           // Onaylanma zamanı
       });
       print('✅ Sipariş kabul edildi: $orderId');
     } catch (e) {
@@ -235,7 +236,8 @@ class FirebaseService {
 
       await db.collection('t_orders').doc(orderId).update({
         's_courier_accepted': false,
-        's_courier_response_time': Timestamp.now(),
+        's_courier_response_time': Timestamp.now(), // Geriye dönük uyumluluk
+        's_rejected_at': Timestamp.now(),           // Red zamanı
         's_courier': 0, // Siparişi serbest bırak
         's_rejected_by_couriers': rejectedBy,
       });
@@ -525,6 +527,25 @@ class FirebaseService {
     });
   }
 
+  /// Kurye yolda bilgisini dinle (s_on_the_way)
+  static Stream<bool> watchCourierOnTheWay(int courierId) {
+    return db
+        .collection('t_courier')
+        .where('s_id', isEqualTo: courierId)
+        .limit(1)
+        .snapshots()
+        .map((snapshot) {
+      if (snapshot.docs.isEmpty) {
+        return false;
+      }
+      final courierData = snapshot.docs.first.data();
+      return courierData['s_on_the_way'] == true;
+    }).handleError((error) {
+      print('❌ Kurye s_on_the_way dinleme hatası: $error');
+      return false;
+    });
+  }
+
   /// ⭐ Kurye statusunu güncelle
   /// 0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza
   static Future<void> updateCourierStatus(int courierId, int status) async {
@@ -598,6 +619,47 @@ class FirebaseService {
       print('❌ ❌ ❌ Kurye statü güncelleme HATASI: $e');
       print('❌ Stack trace: $stackTrace');
       rethrow; // Hata yukarıya fırlatılsın
+    }
+  }
+
+  /// Kurye belgesindeki s_on_the_way alanını güncelle
+  static Future<void> updateCourierOnTheWay(int courierId, bool isOnTheWay) async {
+    try {
+      final querySnapshot = await db
+          .collection('t_courier')
+          .where('s_id', isEqualTo: courierId)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        print('⚠️ s_on_the_way güncelleme için kurye bulunamadı: $courierId');
+        return;
+      }
+
+      await querySnapshot.docs.first.reference.update({
+        's_on_the_way': isOnTheWay,
+      });
+
+      print('✅ s_on_the_way güncellendi: courierId=$courierId, value=$isOnTheWay');
+    } catch (e) {
+      print('❌ s_on_the_way güncelleme hatası: $e');
+    }
+  }
+
+  /// Kurye üzerindeki siparişlerde s_stat=1 var mı kontrol edip s_on_the_way alanını güncelle
+  static Future<void> refreshCourierOnTheWayFromOrders(int courierId) async {
+    try {
+      final onTheWayOrders = await db
+          .collection('t_orders')
+          .where('s_courier', isEqualTo: courierId)
+          .where('s_stat', isEqualTo: 1)
+          .limit(1)
+          .get();
+
+      final hasOnTheWayOrder = onTheWayOrders.docs.isNotEmpty;
+      await updateCourierOnTheWay(courierId, hasOnTheWayOrder);
+    } catch (e) {
+      print('❌ s_on_the_way siparişten yenileme hatası: $e');
     }
   }
 }
