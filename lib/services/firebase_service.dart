@@ -531,7 +531,7 @@ class FirebaseService {
   static Stream<bool> watchCourierOnTheWay(int courierId) {
     return db
         .collection('t_courier')
-        .where('s_id', isEqualTo: courierId)
+        .where('s_id', whereIn: [courierId, courierId.toString()])
         .limit(1)
         .snapshots()
         .map((snapshot) {
@@ -627,7 +627,7 @@ class FirebaseService {
     try {
       final querySnapshot = await db
           .collection('t_courier')
-          .where('s_id', isEqualTo: courierId)
+          .where('s_id', whereIn: [courierId, courierId.toString()])
           .limit(1)
           .get();
 
@@ -636,9 +636,9 @@ class FirebaseService {
         return;
       }
 
-      await querySnapshot.docs.first.reference.update({
+      await querySnapshot.docs.first.reference.set({
         's_on_the_way': isOnTheWay,
-      });
+      }, SetOptions(merge: true));
 
       print('✅ s_on_the_way güncellendi: courierId=$courierId, value=$isOnTheWay');
     } catch (e) {
@@ -651,7 +651,7 @@ class FirebaseService {
     try {
       final onTheWayOrders = await db
           .collection('t_orders')
-          .where('s_courier', isEqualTo: courierId)
+          .where('s_courier', whereIn: [courierId, courierId.toString()])
           .where('s_stat', isEqualTo: 1)
           .limit(1)
           .get();

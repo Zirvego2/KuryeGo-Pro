@@ -501,87 +501,103 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       // Kurye için yeni alan: teslim alındığında yolda=true
       await FirebaseService.updateCourierOnTheWay(widget.order.sCourier, true);
 
-      // ⭐ 3. Posentegra API çağrısı (Teslim Al - 1. adım)
-      if (widget.order.sOrderscr != 0) {
-        final token = widget.order.sOrganizationToken ?? '';
-        final orderId = widget.order.sPid;
-
-        if (token.isNotEmpty && orderId.isNotEmpty) {
-          print('🚀 TESLİM AL: Posentegra API çağrılıyor...');
-          await PlatformApiService.callPlatformDeliveryApi(
-            platformId: widget.order.sOrderscr,
-            organizationToken: token,
-            orderId: orderId,
-          );
-        } else {
-          print('⚠️ TESLİM AL: Token veya OrderID eksik!');
-          print('   Token: ${token.isEmpty ? "YOK" : "VAR"}');
-          print('   OrderID: ${orderId.isEmpty ? "YOK" : "VAR"}');
-        }
-      }
-
-      // ⭐ JaviPos API çağrısı (Teslim Al - Status: "3" = Yolda)
-      if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
-          widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
-        await JaviPosApiService.updateOrderStatus(
-          javiPosid: widget.order.javiPosid!,
-          clientId: widget.order.clientId!,
-          status: '3', // Yolda
-        );
-      } else {
-        print('⚠️ JaviPos API (Teslim Al): JaviPosid veya ClientId eksik');
-      }
-
-      // 📍 4. SMS GÖNDER (s_sms_template kullanarak, trackingUrl ile)
-      SmsService.sendTrackingSMS(widget.order.docId, trackingToken).then((success) {
-        if (success) {
-          print('✅ SMS müşteriye gönderildi (s_sms_template)');
-        } else {
-          print('⚠️ SMS gönderilemedi (arka planda hata)');
-        }
-      }).catchError((error) {
-        print('❌ SMS gönderim hatası: $error');
-      });
-
-      // ⭐ 5. POS Entegrasyon API çağrısı (Teslim Al - order_status = 3)
-      if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
-        final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
-        if (posIntegration != null) {
-          final url = posIntegration['url'] as String;
-          final key = posIntegration['key'] as String;
-          final orderId = widget.order.sPid;
-          
-          // Async çağrı (await etmeden, arka planda çalışsın)
-          _callPosIntegrationApi(
-            url: url,
-            apiKey: key,
-            orderId: orderId,
-            orderStatus: 3, // Yola Çıkar
-            additionalData: null,
-          ).then((success) {
-            if (success) {
-              print('✅ POS entegrasyon API başarılı (Teslim Al)');
-            } else {
-              print('⚠️ POS entegrasyon API başarısız (Teslim Al) - Ana işlem devam ediyor');
-            }
-          }).catchError((error) {
-            print('❌ POS entegrasyon API hatası (Teslim Al): $error');
-          });
-        } else {
-          print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
-        }
-      }
-
       if (mounted) {
         Navigator.pop(context);
         _showTopRightNotification('✅ Sipariş teslim alındı!', isSuccess: true);
       }
+
+      // Dış servis çağrılarını UI'ı bloklamamak için arka planda çalıştır.
+      unawaited(_runPickupSideEffects(trackingToken));
     } catch (e) {
       if (mounted) {
         _showTopRightNotification('❌ Hata: $e');
       }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _runPickupSideEffects(String trackingToken) async {
+    // ⭐ 1) Posentegra API (timeout ile)
+    if (widget.order.sOrderscr != 0) {
+      final token = widget.order.sOrganizationToken ?? '';
+      final orderId = widget.order.sPid;
+
+      if (token.isNotEmpty && orderId.isNotEmpty) {
+        print('🚀 TESLİM AL: Posentegra API çağrılıyor...');
+        try {
+          await PlatformApiService.callPlatformDeliveryApi(
+            platformId: widget.order.sOrderscr,
+            organizationToken: token,
+            orderId: orderId,
+          ).timeout(const Duration(seconds: 10));
+        } catch (e) {
+          print('❌ Posentegra API hatası (Teslim Al): $e');
+        }
+      } else {
+        print('⚠️ TESLİM AL: Token veya OrderID eksik!');
+        print('   Token: ${token.isEmpty ? "YOK" : "VAR"}');
+        print('   OrderID: ${orderId.isEmpty ? "YOK" : "VAR"}');
+      }
+    }
+
+    // ⭐ 2) JaviPos API (timeout ile)
+    if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+        widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+      try {
+        await JaviPosApiService.updateOrderStatus(
+          javiPosid: widget.order.javiPosid!,
+          clientId: widget.order.clientId!,
+          status: '3', // Yolda
+        ).timeout(const Duration(seconds: 10));
+      } catch (e) {
+        print('❌ JaviPos API hatası (Teslim Al): $e');
+      }
+    } else {
+      print('⚠️ JaviPos API (Teslim Al): JaviPosid veya ClientId eksik');
+    }
+
+    // ⭐ 3) SMS (arka plan, timeout)
+    try {
+      final smsSuccess = await SmsService.sendTrackingSMS(widget.order.docId, trackingToken)
+          .timeout(const Duration(seconds: 10));
+      if (smsSuccess) {
+        print('✅ SMS müşteriye gönderildi (s_sms_template)');
+      } else {
+        print('⚠️ SMS gönderilemedi (arka planda hata)');
+      }
+    } catch (e) {
+      print('❌ SMS gönderim hatası: $e');
+    }
+
+    // ⭐ 4) POS Entegrasyon API (arka plan)
+    if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+      try {
+        final posIntegration = await _getWorkPosIntegration(widget.order.sWork)
+            .timeout(const Duration(seconds: 10));
+        if (posIntegration != null) {
+          final url = posIntegration['url'] as String;
+          final key = posIntegration['key'] as String;
+          final orderId = widget.order.sPid;
+
+          final success = await _callPosIntegrationApi(
+            url: url,
+            apiKey: key,
+            orderId: orderId,
+            orderStatus: 3, // Yola Çıkar
+            additionalData: null,
+          ).timeout(const Duration(seconds: 10));
+          if (success) {
+            print('✅ POS entegrasyon API başarılı (Teslim Al)');
+          } else {
+            print('⚠️ POS entegrasyon API başarısız (Teslim Al) - Ana işlem devam ediyor');
+          }
+        } else {
+          print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+        }
+      } catch (e) {
+        print('❌ POS entegrasyon API hatası (Teslim Al): $e');
+      }
     }
   }
 
@@ -1531,17 +1547,18 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
 
       await FirebaseFirestore.instance.collection(targetCollection).add({
         'app_version': '60.12.3', // Uygulama versiyonu
-        'bay_id': null, // Null olarak kaydediliyor (mevcut yapıya uygun)
+        // Null yerine raporlamayı kolaylaştıracak varsayılan değerler yazıyoruz.
+        'bay_id': bayId,
         'change_count_today': changeCountToday,
         'changed_at': FieldValue.serverTimestamp(),
         'changed_by_courier_id': widget.order.sCourier,
         'changed_by_courier_name': courierName,
         'courier_bay_id': bayId,
-        'courier_bay_name': bayName, // Bay adı
+        'courier_bay_name': bayName ?? '', // Bay adı
         'created_at': FieldValue.serverTimestamp(),
-        'customer_address': widget.order.ssAdres.isNotEmpty ? widget.order.ssAdres : null,
-        'customer_name': widget.order.ssFullname.isNotEmpty ? widget.order.ssFullname : null,
-        'customer_phone': widget.order.ssPhone.isNotEmpty ? widget.order.ssPhone : null,
+        'customer_address': widget.order.ssAdres.isNotEmpty ? widget.order.ssAdres : '',
+        'customer_name': widget.order.ssFullname.isNotEmpty ? widget.order.ssFullname : '',
+        'customer_phone': widget.order.ssPhone.isNotEmpty ? widget.order.ssPhone : '',
         'is_suspicious': false,
         'new_amount_card': newCard,
         'new_amount_cash': newCash,
@@ -1560,7 +1577,9 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         'original_total': total,
         'platform': 'android',
         'restaurant_id': widget.order.sWork,
-        'restaurant_name': _restaurantName, // Restoran adı (t_work'ten çekiliyor)
+        'restaurant_name': (_restaurantName?.isNotEmpty ?? false)
+            ? _restaurantName
+            : '', // Restoran adı (t_work'ten çekiliyor)
       });
 
       print('💾 Ödeme değişikliği kaydedildi ($targetCollection): $courierName tarafından');
@@ -2997,9 +3016,19 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         if (timeDiff.inMinutes < requiredMinutes) {
           isButtonEnabled = false;
           remainingSeconds = (requiredMinutes * 60) - timeDiff.inSeconds;
-          final remainingMinutes = remainingSeconds ~/ 60;
-          final remainingSecs = remainingSeconds % 60;
-          waitMessage = '$remainingMinutes:${remainingSecs.toString().padLeft(2, '0')}';
+          waitMessage = '${remainingSeconds}s';
+        }
+      }
+    } else if (isWaitingForPickup) {
+      // ONAY → TESLİM AL: onaydan sonra 1.5 dakika (90 sn) beklet
+      final acceptedAt = widget.order.sAcceptedAt ?? widget.order.sCourierResponseTime;
+      if (acceptedAt != null) {
+        final elapsed = DateTime.now().difference(acceptedAt).inSeconds;
+        const requiredSeconds = 90; // 1.5 dakika
+        if (elapsed < requiredSeconds) {
+          isButtonEnabled = false;
+          remainingSeconds = requiredSeconds - elapsed;
+          waitMessage = '${remainingSeconds}s';
         }
       }
     }

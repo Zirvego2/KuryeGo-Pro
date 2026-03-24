@@ -159,6 +159,9 @@ class _HomeScreenState extends State<HomeScreen> {
     // ⭐ Background location service'i kontrol et ve başlat
     await _ensureLocationServiceRunning();
 
+    // s_on_the_way alanı belgede yoksa ilk açılışta siparişlerden üretip initialize et.
+    await FirebaseService.refreshCourierOnTheWayFromOrders(_courierId!);
+
     // Konum takibini başlat (foreground - harita için)
     _startLocationTracking();
     

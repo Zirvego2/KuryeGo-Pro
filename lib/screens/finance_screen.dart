@@ -598,7 +598,7 @@ class _FinanceScreenState extends State<FinanceScreen> {
           Icon(icon, color: color, size: 28),
           const SizedBox(height: 8),
           Text(
-            '$amount₺',
+            '${amount.toStringAsFixed(2)}₺',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.bold,
