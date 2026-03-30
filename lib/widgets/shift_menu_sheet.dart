@@ -141,6 +141,10 @@ class _ShiftMenuSheetState extends State<ShiftMenuSheet> {
         if (mounted) {
           setState(() {
             _currentCourierStatus = status;
+            // BREAK disindaki durumlarda stale sayaç kalmasin.
+            if (status != ShiftService.STATUS_BREAK) {
+              _currentBreakInfo = null;
+            }
           });
         }
         

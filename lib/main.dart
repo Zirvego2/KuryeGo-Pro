@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -37,6 +38,13 @@ void main() async {
     }
   }
 
+  runApp(const ZirveGoApp());
+
+  // Uygulamanın ilk frame'ini geciktirmemek için servisleri arka planda başlat.
+  unawaited(_initializeStartupServices());
+}
+
+Future<void> _initializeStartupServices() async {
   // 🔔 Notification service başlat (FCM token + bildirim ayarları)
   print('🔔 Notification Service başlatılıyor...');
   try {
@@ -50,14 +58,18 @@ void main() async {
 
   // Background location service başlat
   print('📍 Location Service başlatılıyor...');
-  await LocationService.initialize();
-  print('✅ Location Service başlatıldı');
+  try {
+    await LocationService.initialize();
+    print('✅ Location Service başlatıldı');
+  } catch (e, stackTrace) {
+    print('❌ Location Service BAŞLATMA HATASI!');
+    print('❌ Hata: $e');
+    print('❌ Stack: $stackTrace');
+  }
 
   print('🚀 ========================================');
   print('🚀 UYGULAMA HAZIR!');
   print('🚀 ========================================');
-
-  runApp(const ZirveGoApp());
 }
 
 class ZirveGoApp extends StatelessWidget {

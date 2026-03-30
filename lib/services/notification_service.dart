@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
@@ -214,9 +215,13 @@ class NotificationService {
       
       print('💾 FCM Token Firestore\'a kaydediliyor (Kurye ID: $courierId)...');
       
-      await FirebaseService.updateFCMToken(courierId, token);
+      await FirebaseService.updateFCMToken(courierId, token).timeout(
+        const Duration(seconds: 8),
+      );
       
       print('✅ FCM Token Firestore\'a kaydedildi!');
+    } on TimeoutException {
+      print('⚠️ Token Firestore kaydı zaman aşımına uğradı, uygulama devam ediyor');
     } catch (e) {
       print('❌ Token Firestore kaydetme hatası: $e');
     }

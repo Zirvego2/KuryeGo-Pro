@@ -662,5 +662,42 @@ class FirebaseService {
       print('❌ s_on_the_way siparişten yenileme hatası: $e');
     }
   }
+
+  /// Bay genel ayarından sistem dışı paket girişinin açık olup olmadığını kontrol et.
+  /// Kaynak: t_bay.s_settings.externalOrderEntryEnabled
+  static Future<bool> isExternalOrderEntryEnabledForBay(int bayId) async {
+    try {
+      // Öncelik: s_id == bayId (ana kayıt)
+      QuerySnapshot<Map<String, dynamic>> querySnapshot = await db
+          .collection('t_bay')
+          .where('s_id', isEqualTo: bayId)
+          .limit(1)
+          .get();
+
+      // Fallback: bazı yapılarda s_bay üzerinden eşleşme kullanılabiliyor
+      if (querySnapshot.docs.isEmpty) {
+        querySnapshot = await db
+            .collection('t_bay')
+            .where('s_bay', isEqualTo: bayId)
+            .limit(1)
+            .get();
+      }
+
+      if (querySnapshot.docs.isEmpty) {
+        print('⚠️ Bay bulunamadı (externalOrderEntryEnabled): $bayId');
+        return false;
+      }
+
+      final bayData = querySnapshot.docs.first.data();
+      final sSettings = bayData['s_settings'] as Map<String, dynamic>?;
+      final enabled = sSettings?['externalOrderEntryEnabled'] == true;
+
+      print('⚙️ externalOrderEntryEnabled (bay=$bayId): $enabled');
+      return enabled;
+    } catch (e) {
+      print('❌ externalOrderEntryEnabled okuma hatası: $e');
+      return false;
+    }
+  }
 }
 

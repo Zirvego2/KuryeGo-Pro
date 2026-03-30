@@ -9,6 +9,9 @@ import 'payment_changes_screen.dart';
 import 'settings_screen.dart';
 import 'cash_on_hand_screen.dart';
 import 'leave_plan_screen.dart';
+import 'my_external_orders_screen.dart';
+import 'my_external_orders_report_screen.dart';
+import 'courier_penalty_reward_screen.dart';
 
 /// 👤 Profil & Ayarlar Ekranı
 class ProfileScreen extends StatefulWidget {
@@ -194,6 +197,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Icons.money,
                     const Color(0xFF4CAF50),
                     _openCashOnHand,
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Sistem Dışı İşlemler
+                  _buildSectionTitle('📦 Sistem Dışı İşlemler'),
+                  _buildActionButton(
+                    'Sistem Dışı Siparişlerim',
+                    Icons.assignment_outlined,
+                    const Color(0xFF2563EB),
+                    _openExternalOrders,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildActionButton(
+                    'Sistem Dışı Sipariş Raporlarım',
+                    Icons.bar_chart_rounded,
+                    const Color(0xFF7C3AED),
+                    _openExternalOrdersReport,
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Ödül & Ceza (profil / Ayarlar sekmesinde doğrudan görünsün)
+                  _buildSectionTitle('🏅 Ödül & Ceza'),
+                  _buildActionButton(
+                    'Ödül ve ceza kayıtlarım',
+                    Icons.account_balance,
+                    const Color(0xFF5E35B1),
+                    _openPenaltyReward,
                   ),
 
                   const SizedBox(height: 20),
@@ -745,6 +777,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
         builder: (_) => SettingsScreen(
           courierId: widget.courierId,
           courierName: widget.courierName,
+          bayId: widget.bayId,
+        ),
+      ),
+    );
+  }
+
+  /// Ödül & ceza kayıtları (panelden girilen)
+  void _openPenaltyReward() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CourierPenaltyRewardScreen(
+          courierId: widget.courierId,
+          bayId: widget.bayId,
+        ),
+      ),
+    );
+  }
+
+  /// Sistem Dışı Siparişlerim sayfasını aç
+  void _openExternalOrders() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MyExternalOrdersScreen(
+          courierId: widget.courierId,
+          bayId: widget.bayId,
+        ),
+      ),
+    );
+  }
+
+  /// Sistem Dışı Sipariş Raporlarım sayfasını aç
+  void _openExternalOrdersReport() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MyExternalOrdersReportScreen(
+          courierId: widget.courierId,
           bayId: widget.bayId,
         ),
       ),

@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'privacy_policy_screen.dart';
 import 'login_screen.dart';
+import 'courier_penalty_reward_screen.dart';
 
 /// ⚙️ Ayarlar Ekranı
 /// Google Play & Apple Store Onayı için ZORUNLU özellikler:
@@ -125,6 +126,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Kurye ID',
                     value: '#${widget.courierId}',
                     iconColor: Colors.teal,
+                  ),
+
+                  const SizedBox(height: 32),
+
+                  _buildSectionTitle('🏅 Ödül & Ceza'),
+                  const SizedBox(height: 12),
+                  _buildSettingTile(
+                    icon: Icons.account_balance,
+                    title: 'Ödül ve ceza kayıtlarım',
+                    subtitle:
+                        'Size tanımlanan paket ödülleri ve cezaları görüntüleyin',
+                    iconColor: Colors.deepPurple,
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => CourierPenaltyRewardScreen(
+                            courierId: widget.courierId,
+                            bayId: widget.bayId,
+                          ),
+                        ),
+                      );
+                    },
                   ),
 
                   const SizedBox(height: 32),

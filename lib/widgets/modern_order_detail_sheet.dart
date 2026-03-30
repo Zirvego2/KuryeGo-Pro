@@ -663,68 +663,6 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         );
       }
 
-      // ⭐ Posentegra API çağrısı (Teslim Et - 2. adım)
-      if (widget.order.sOrderscr != 0) {
-        final token = widget.order.sOrganizationToken ?? '';
-        final orderId = widget.order.sPid;
-
-        if (token.isNotEmpty && orderId.isNotEmpty) {
-          print('🚀 TESLİM ET: Posentegra API çağrılıyor...');
-          await PlatformApiService.callPlatformDeliveryApi(
-            platformId: widget.order.sOrderscr,
-            organizationToken: token,
-            orderId: orderId,
-          );
-        } else {
-          print('⚠️ TESLİM ET: Token veya OrderID eksik!');
-          print('   Token: ${token.isEmpty ? "YOK" : "VAR"}');
-          print('   OrderID: ${orderId.isEmpty ? "YOK" : "VAR"}');
-        }
-      }
-
-      // ⭐ JaviPos API çağrısı (Teslim Et - Status: "4" = Teslim Edildi)
-      if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
-          widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
-        await JaviPosApiService.updateOrderStatus(
-          javiPosid: widget.order.javiPosid!,
-          clientId: widget.order.clientId!,
-          status: '4', // Teslim Edildi
-        );
-      } else {
-        print('⚠️ JaviPos API (Teslim Et): JaviPosid veya ClientId eksik');
-      }
-
-      // ⭐ POS Entegrasyon API çağrısı (Teslim Et - order_status = 4)
-      if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
-        final posIntegration = await _getWorkPosIntegration(widget.order.sWork);
-        if (posIntegration != null) {
-          final url = posIntegration['url'] as String;
-          final key = posIntegration['key'] as String;
-          final orderId = widget.order.sPid;
-          
-          // Async çağrı (await etmeden, arka planda çalışsın)
-          _callPosIntegrationApi(
-            url: url,
-            apiKey: key,
-            orderId: orderId,
-            orderStatus: 4, // Teslim Edildi
-            additionalData: {
-              'order_payment': null,
-            },
-          ).then((success) {
-            if (success) {
-              print('✅ POS entegrasyon API başarılı (Teslim Et)');
-            } else {
-              print('⚠️ POS entegrasyon API başarısız (Teslim Et) - Ana işlem devam ediyor');
-            }
-          }).catchError((error) {
-            print('❌ POS entegrasyon API hatası (Teslim Et): $error');
-          });
-        } else {
-          print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
-        }
-      }
-
       // ⭐ Kurye durumunu güncelle: Başka aktif siparişi varsa meşgul, yoksa müsait
       await _updateCourierStatusAfterDelivery(widget.order.sCourier);
 
@@ -735,12 +673,88 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         Navigator.pop(context);
         _showTopRightNotification('✅ Sipariş teslim edildi!', isSuccess: true);
       }
+
+      // Dış servis çağrılarını UI'ı bloklamamak için arka planda çalıştır.
+      unawaited(_runDeliverSideEffects());
     } catch (e) {
       if (mounted) {
         _showTopRightNotification('❌ Hata: $e');
       }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _runDeliverSideEffects() async {
+    // ⭐ 1) Posentegra API (timeout ile)
+    if (widget.order.sOrderscr != 0) {
+      final token = widget.order.sOrganizationToken ?? '';
+      final orderId = widget.order.sPid;
+
+      if (token.isNotEmpty && orderId.isNotEmpty) {
+        print('🚀 TESLİM ET: Posentegra API çağrılıyor...');
+        try {
+          await PlatformApiService.callPlatformDeliveryApi(
+            platformId: widget.order.sOrderscr,
+            organizationToken: token,
+            orderId: orderId,
+          ).timeout(const Duration(seconds: 10));
+        } catch (e) {
+          print('❌ Posentegra API hatası (Teslim Et): $e');
+        }
+      } else {
+        print('⚠️ TESLİM ET: Token veya OrderID eksik!');
+        print('   Token: ${token.isEmpty ? "YOK" : "VAR"}');
+        print('   OrderID: ${orderId.isEmpty ? "YOK" : "VAR"}');
+      }
+    }
+
+    // ⭐ 2) JaviPos API (timeout ile)
+    if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
+        widget.order.clientId != null && widget.order.clientId!.isNotEmpty) {
+      try {
+        await JaviPosApiService.updateOrderStatus(
+          javiPosid: widget.order.javiPosid!,
+          clientId: widget.order.clientId!,
+          status: '4', // Teslim Edildi
+        ).timeout(const Duration(seconds: 10));
+      } catch (e) {
+        print('❌ JaviPos API hatası (Teslim Et): $e');
+      }
+    } else {
+      print('⚠️ JaviPos API (Teslim Et): JaviPosid veya ClientId eksik');
+    }
+
+    // ⭐ 3) POS Entegrasyon API (arka plan)
+    if (widget.order.sWork > 0 && widget.order.sPid.isNotEmpty) {
+      try {
+        final posIntegration = await _getWorkPosIntegration(widget.order.sWork)
+            .timeout(const Duration(seconds: 10));
+        if (posIntegration != null) {
+          final url = posIntegration['url'] as String;
+          final key = posIntegration['key'] as String;
+          final orderId = widget.order.sPid;
+
+          final success = await _callPosIntegrationApi(
+            url: url,
+            apiKey: key,
+            orderId: orderId,
+            orderStatus: 4, // Teslim Edildi
+            additionalData: {
+              'order_payment': null,
+            },
+          ).timeout(const Duration(seconds: 10));
+          if (success) {
+            print('✅ POS entegrasyon API başarılı (Teslim Et)');
+          } else {
+            print('⚠️ POS entegrasyon API başarısız (Teslim Et) - Ana işlem devam ediyor');
+          }
+        } else {
+          print('ℹ️ Bu işletme için POS entegrasyon yok, atlanıyor');
+        }
+      } catch (e) {
+        print('❌ POS entegrasyon API hatası (Teslim Et): $e');
+      }
     }
   }
 
@@ -754,7 +768,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       // Aktif sipariş: s_stat in [0, 1, 4] (0=Hazır, 1=Yolda, 4=Hazırlanıyor)
       final activeOrdersQuery = await FirebaseFirestore.instance
           .collection('t_orders')
-          .where('s_courier', isEqualTo: courierId)
+          .where('s_courier', whereIn: [courierId, courierId.toString()])
           .where('s_stat', whereIn: [0, 1, 4])
           .get();
 

@@ -13,10 +13,13 @@ import '../services/firebase_service.dart';
 import '../services/location_service.dart';
 import '../services/shift_service.dart';
 import '../services/shift_log_service.dart';
+import '../services/break_service.dart';
 import '../services/route_service.dart';
+import '../services/pool_order_service.dart';
 import '../models/order_model.dart';
 import '../widgets/modern_order_detail_sheet.dart';
 import '../widgets/modern_header.dart';
+import 'external_order_screen.dart';
 import '../widgets/modern_order_card.dart';
 import '../widgets/shift_menu_sheet.dart';
 import '../widgets/route_add_order_popup.dart';
@@ -24,6 +27,7 @@ import '../widgets/route_add_order_popup.dart';
 import '../main.dart';
 import 'login_screen.dart';
 import 'main_profile_screen.dart';
+import 'pool_orders_screen.dart';
 
 /// Ana Harita Ekranı
 /// React Native Page_Home.js karşılığı
@@ -34,7 +38,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   GoogleMapController? _mapController;
   LatLng? _currentLocation; // İlk konum alınana kadar null
   final Set<Marker> _markers = {};
@@ -52,10 +56,16 @@ class _HomeScreenState extends State<HomeScreen> {
   int _courierStatus = 1; // 0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza
   bool _isOnTheWay = false; // t_courier.s_on_the_way
   int _bayId = 1; // Bay/Şube ID (varsayılan)
+  bool _poolPermissionEnabled = false;
+  bool _poolAllowWhileBusy = false;
+  String _poolBusinessScope = 'selected';
+  List<int> _poolBusinessIds = [];
+  bool _externalOrderEntryEnabled = false;
   
   // ⏰ Foreground location timer (debug/development için)
   Timer? _foregroundLocationTimer;
   int _foregroundTickCount = 0; // Tick sayacı
+  bool _initialLocationTimedOut = false;
   
   
   // 🆕 Yeni sipariş bildirim kontrolü (Popup sistemi kaldırıldı)
@@ -73,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _autoRouteEnabled = true; // Rota özelliği aktif mi? (Ayarlardan kontrol edilir)
   
   final ShiftLogService _shiftLogService = ShiftLogService(); // ⭐ Vardiya log servisi
+  final BreakService _breakService = BreakService();
   
   // 🏪 Restoran sipariş yoğunluk haritası
   final Map<int, Map<String, dynamic>> _restaurants = {}; // Restoran bilgileri cache (restoran ID -> {s_id, s_name, s_loc})
@@ -85,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _setAppRunningFlag(true); // Uygulama açık
     _initializeApp();
     
@@ -103,6 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _foregroundLocationTimer?.cancel();
     _notificationAudioPlayer.dispose(); // ⭐ Audio player'ı temizle
     _restaurantOrdersSubscription?.cancel(); // ⭐ Restoran sipariş stream'ini iptal et
@@ -120,6 +133,27 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshBreakStateOnResume();
+    }
+  }
+
+  /// App tekrar on plana geldiginde mola state'ini hizlica senkronla.
+  Future<void> _refreshBreakStateOnResume() async {
+    if (_courierId == null) return;
+    try {
+      final activeLog = await _shiftLogService.getActiveShift(_courierId!);
+      if (activeLog?.status == 'BREAK') {
+        // Kalan sure dolmussa BreakService fallback'i autoEndBreak'i tetikler.
+        await _breakService.getCurrentBreakInfo(_courierId!);
+      }
+    } catch (e) {
+      print('⚠️ Resume break refresh hatası: $e');
+    }
   }
 
   /// 🏁 Uygulama çalışıyor flag'ini set et (Background service için)
@@ -164,6 +198,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Konum takibini başlat (foreground - harita için)
     _startLocationTracking();
+    unawaited(_ensureInitialLocationReady());
     
     // ⏰ Foreground location timer KAPALI - Background service zaten optimize edilmiş ve çalışıyor
     // _startForegroundLocationTimer(); // ❌ KAPALI: Gereksiz API istekleri oluşturuyordu
@@ -424,8 +459,67 @@ class _HomeScreenState extends State<HomeScreen> {
       _userName = userName;
       _bayId = bayId;
     });
+
+    if (_courierId != null) {
+      try {
+        final poolConfig = await PoolOrderService.getCourierPoolConfig(_courierId!);
+        final externalOrderEnabled = await FirebaseService.isExternalOrderEntryEnabledForBay(bayId);
+        if (!mounted) return;
+        setState(() {
+          _poolPermissionEnabled = poolConfig['enabled'] == true;
+          _poolAllowWhileBusy = poolConfig['allowWhileBusy'] == true;
+          _poolBusinessScope = poolConfig['scope'] == 'all' ? 'all' : 'selected';
+          _poolBusinessIds = (poolConfig['businessIds'] as List<dynamic>)
+              .map((item) => int.tryParse(item.toString()))
+              .whereType<int>()
+              .toList();
+          _externalOrderEntryEnabled = externalOrderEnabled;
+        });
+      } catch (e) {
+        print('❌ Havuz yetki bilgisi alınamadı: $e');
+      }
+    }
     
     print('👤 Kullanıcı bilgileri yüklendi: $_userName (Bay: $_bayId)');
+  }
+
+  Future<void> _openPoolScreen() async {
+    if (_courierId == null || !_poolPermissionEnabled) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PoolOrdersScreen(
+          courierId: _courierId!,
+          bayId: _bayId,
+          courierStatus: _courierStatus,
+          allowWhileBusy: _poolAllowWhileBusy,
+          businessScope: _poolBusinessScope,
+          businessIds: _poolBusinessIds,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openExternalOrderEntry() async {
+    if (!_externalOrderEntryEnabled) return;
+    if (!mounted) return;
+
+    if (_courierId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Devam etmek için giriş yapın')),
+      );
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ExternalOrderScreen(
+          bayId: _bayId,
+          courierId: _courierId!,
+        ),
+      ),
+    );
   }
 
   /// 🏪 Bay'a bağlı restoranları yükle
@@ -1320,6 +1414,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _isFirstLocation = false;
           setState(() {
             _currentLocation = newLocation;
+            _initialLocationTimedOut = false;
           });
           
           // Widget rebuild olacak, harita oluşturulunca onMapCreated içinde merkeze alınacak
@@ -1358,7 +1453,44 @@ class _HomeScreenState extends State<HomeScreen> {
           // print('📍 [KONUM] Konum güncellendi: (${newLocation.latitude.toStringAsFixed(6)}, ${newLocation.longitude.toStringAsFixed(6)})');
         }
       }
+    }, onError: (error) {
+      print('❌ [KONUM] Position stream hatası: $error');
+      if (mounted && _currentLocation == null) {
+        setState(() {
+          _initialLocationTimedOut = true;
+        });
+      }
     });
+  }
+
+  Future<void> _ensureInitialLocationReady() async {
+    await Future.delayed(const Duration(seconds: 6));
+    if (!mounted || _currentLocation != null) return;
+
+    print('⚠️ [KONUM] Stream ilk konumu vermedi, tek seferlik konum denemesi yapılıyor...');
+    final position = await LocationService.getCurrentLocation().timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => null,
+    );
+
+    if (!mounted || _currentLocation != null) return;
+
+    if (position != null) {
+      final newLocation = LatLng(position.latitude, position.longitude);
+      setState(() {
+        _isFirstLocation = false;
+        _currentLocation = newLocation;
+        _initialLocationTimedOut = false;
+      });
+      _updateMarkers();
+      print('✅ [KONUM] Fallback ile ilk konum alındı');
+      return;
+    }
+
+    setState(() {
+      _initialLocationTimedOut = true;
+    });
+    print('❌ [KONUM] İlk konum alınamadı (stream + fallback başarısız)');
   }
 
   /// Marker'ları güncelle
@@ -2196,15 +2328,35 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const CircularProgressIndicator(),
+                    if (!_initialLocationTimedOut) const CircularProgressIndicator(),
                     const SizedBox(height: 16),
                     Text(
-                      'Konumunuz alınıyor...',
+                      _initialLocationTimedOut
+                          ? 'Konum alınamadı. GPS/Internet kontrol edin.'
+                          : 'Konumunuz alınıyor...',
                       style: TextStyle(
                         fontSize: 16,
                         color: Colors.grey[600],
                       ),
                     ),
+                    if (_initialLocationTimedOut) ...[
+                      const SizedBox(height: 12),
+                      ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            _initialLocationTimedOut = false;
+                            _isFirstLocation = true;
+                          });
+                          _startLocationTracking();
+                          unawaited(_ensureInitialLocationReady());
+                        },
+                        child: const Text('Tekrar Dene'),
+                      ),
+                      TextButton(
+                        onPressed: LocationService.openLocationSettings,
+                        child: const Text('Konum Ayarlarini Ac'),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -2235,6 +2387,92 @@ class _HomeScreenState extends State<HomeScreen> {
             left: 16,
             child: _buildRouteControlPanel(),
           ),
+
+          if (_poolPermissionEnabled)
+            Positioned(
+              top: 220,
+              right: 16,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: _openPoolScreen,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.inventory_2_outlined, color: Color(0xFF1D4ED8)),
+                          SizedBox(width: 6),
+                          Text(
+                            'Havuz',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1D4ED8),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          if (_externalOrderEntryEnabled)
+            Positioned(
+              top: _poolPermissionEnabled ? 280 : 220,
+              right: 16,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: _openExternalOrderEntry,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.add_box_outlined, color: Color(0xFF047857)),
+                          SizedBox(width: 6),
+                          Text(
+                            'Sistem Dışı',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF047857),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // 4. Düzeltme: Test konum butonu kaldırıldı
 
