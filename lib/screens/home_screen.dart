@@ -46,7 +46,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<OrderModel> _filteredOrders = [];
   int? _courierId;
   bool _isLoading = true;
-  String _selectedFilter = 'all'; // all, waiting, onroad
+  String _selectedFilter = 'waiting'; // all, waiting, onroad
+  bool _quickActionsExpanded = false; // Sağ panel: Havuz / Sistem Dışı
+  bool _notificationExpanded = true; // Sağ panel: Onay bekleyenler (gizle/aç)
   
   // ⭐ YENİ: Header bilgileri
   String _userName = '';
@@ -111,6 +113,104 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         });
       }
     });
+  }
+
+  /// Sağ tarafta gizlenebilir hızlı işlemler (Havuz / Sistem Dışı)
+  Widget _buildQuickActionsPanel() {
+    if (!_poolPermissionEnabled && !_externalOrderEntryEnabled) {
+      return const SizedBox.shrink();
+    }
+    const double panelWidth = 160;
+
+    return Container(
+      width: panelWidth,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InkWell(
+                onTap: () => setState(() => _quickActionsExpanded = !_quickActionsExpanded),
+                customBorder: const CircleBorder(),
+                child: Container(
+                  width: 26,
+                  height: 26,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFE5E7EB),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _quickActionsExpanded ? Icons.chevron_right : Icons.chevron_left,
+                    size: 18,
+                    color: const Color(0xFF374151),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: panelWidth - 44 - 16, // panel - toggle alanı - boşluklar
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_poolPermissionEnabled)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: ElevatedButton.icon(
+                          onPressed: _openPoolScreen,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: const Color(0xFF1D4ED8),
+                            elevation: 0,
+                            side: const BorderSide(color: Color(0xFF1D4ED8)),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                          ),
+                          icon: const Icon(Icons.inventory_2_outlined, size: 16),
+                            label: const Text(
+                              'Havuz',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                            ),
+                        ),
+                      ),
+                    if (_externalOrderEntryEnabled)
+                      ElevatedButton.icon(
+                        onPressed: _openExternalOrderEntry,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF047857),
+                          elevation: 0,
+                          side: const BorderSide(color: Color(0xFF047857)),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                        ),
+                          icon: const Icon(Icons.add_box_outlined, size: 16),
+                          label: const Text(
+                            'Sistem Dışı',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                          ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -393,15 +493,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               print('   📦 İşletme: $businessName');
               print('   📊 Stat: $orderStat, Önceki stat: $previousStat, İşlenmiş: ${_processedOrderIds.contains(orderDocId)}');
               
-              // ⭐ Rota aktifse ve rota özelliği açıksa: Yeni sipariş popup'ı göster
-              // Değilse: Sadece bildirim göster
-              if (_isRouteActive && _autoRouteEnabled && _currentRoute != null) {
-                print('🗺️ [ROTA] Aktif rota var, yeni sipariş popup\'ı gösterilecek');
-                _showRouteAddOrderPopup(newOrder);
-              } else {
-                // ⭐ Bildirimi göster ve sesi çal
-                _showNewOrderNotification(businessName);
-              }
+              // ⭐ Rota aktif olsa bile stat=0/4 siparişleri onay adımını atlatma:
+              // Otomatik onay/rotaya ekleme yapmıyoruz; kartta normal ONAYLA adımı görünmeye devam etsin.
+              _showNewOrderNotification(businessName);
               
               // İşlendi olarak işaretle
               _processedOrderIds.add(orderDocId);
@@ -1871,7 +1965,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     print('🔄 [ROTA] Teslim sonrası rota yeniden hesaplanıyor...');
     
-    // Teslim alındı (s_stat=1) siparişleri filtrele
+    // Rotaya dahil edilecek siparişler: sadece teslim alınmışlar (s_stat=1)
+    // s_stat=0 siparişleri "Dağıtıma Çık" deyince değil, kullanıcı "Teslim Al" yapınca s_stat=1 olunca rotaya girer.
     final ordersToRoute = _orders.where((order) => order.sStat == 1).toList();
 
     if (ordersToRoute.isEmpty) {
@@ -1976,13 +2071,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (!_isRouteActive || _currentRoute == null) return;
 
     try {
-      // Siparişi kabul et (s_stat=1 yap)
+      // Siparişi kabul et (s_stat değiştirmiyoruz; UI'de akış devam etsin)
       await FirebaseService.acceptOrder(newOrder.docId);
-      await FirebaseService.updateOrderStatus(
-        newOrder.docId,
-        1,
-        receivedTime: DateTime.now(),
-      );
 
       // Rotayı yeniden hesapla (yeni sipariş dahil)
       await _recalculateRouteAfterDelivery();
@@ -2376,103 +2466,48 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           
           // ⭐ Bildirimler (Bildirim butonunun eski yerinde - Sağ üstte)
           Positioned(
-            top: 140, // ⭐ 80 → 140 (Daha aşağıya taşındı)
-            right: 16,
-            child: _buildNotificationPanel(),
+            top: 160, // ⭐ 80 → 140 (Daha aşağıya taşındı)
+            right: 0,
+            child: _buildNotificationWidget(),
           ),
 
           // 🗺️ Dağıtıma Çık Butonu ve Rota Bilgisi (Sol üstte)
           Positioned(
-            top: 140,
-            left: 16,
+            top: 165,
+            left: 1,
             child: _buildRouteControlPanel(),
           ),
 
-          if (_poolPermissionEnabled)
-            Positioned(
-              top: 220,
-              right: 16,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.15),
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: _openPoolScreen,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.inventory_2_outlined, color: Color(0xFF1D4ED8)),
-                          SizedBox(width: 6),
-                          Text(
-                            'Havuz',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1D4ED8),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
+          // ⭐ Sağ tarafta gizlenebilir hızlı işlemler (Havuz / Sistem Dışı)
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+            top: 312, // biraz daha aşağı
+            right: _quickActionsExpanded ? 0 : -138, // biraz daha sağa
+            child: _buildQuickActionsPanel(),
+          ),
 
-          if (_externalOrderEntryEnabled)
-            Positioned(
-              top: _poolPermissionEnabled ? 280 : 220,
-              right: 16,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.15),
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
+          // ⭐ Küçük filtre butonları (kart tasarımını bozmadan üstte, liste dışında)
+          Positioned(
+            bottom: 270 + 2, // Liste alanına daha yakın
+            left: 12,
+            right: 12,
+            child: Row(
+              children: [
+                _buildMiniFilterChip(
+                  'Aktif Paket',
+                  'waiting',
+                  _orders.where((o) => o.sStat == 0 || o.sStat == 4).length,
                 ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: _openExternalOrderEntry,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.add_box_outlined, color: Color(0xFF047857)),
-                          SizedBox(width: 6),
-                          Text(
-                            'Sistem Dışı',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF047857),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                const SizedBox(width: 8),
+                _buildMiniFilterChip(
+                  'Yoldaki Paket',
+                  'onroad',
+                  _orders.where((o) => o.sStat == 1).length,
                 ),
-              ),
+              ],
             ),
+          ),
 
           // 4. Düzeltme: Test konum butonu kaldırıldı
 
@@ -2634,7 +2669,144 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
+  /// Küçük (kompakt) filtre chip - kart tasarımını etkilemeden overlay için
+  Widget _buildMiniFilterChip(String label, String value, int count) {
+    final isSelected = _selectedFilter == value;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _selectedFilter = value;
+          _applyFilter();
+        });
+      },
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.blue : Colors.grey[200],
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? Colors.white : Colors.black87,
+                fontSize: 11,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.white.withOpacity(0.2) : Colors.white,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$count',
+                style: TextStyle(
+                  color: isSelected ? Colors.white : Colors.black54,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// ⭐ Bildirim Paneli (Onay bekleyen siparişler)
+  Widget _buildNotificationWidget() {
+    final pendingCount = _orders.where(
+      (order) =>
+          order.sStat == 0 &&
+          (order.sCourierAccepted == null || order.sCourierAccepted == false),
+    ).length;
+
+    if (pendingCount == 0) return const SizedBox.shrink();
+
+    if (_notificationExpanded) {
+      return _buildNotificationPanel();
+    }
+
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _notificationExpanded = true;
+        });
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.15),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+          border: Border.all(color: Colors.grey.withOpacity(0.12)),
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Center(
+              child: Icon(
+                Icons.chevron_right,
+                size: 18,
+                color: Colors.grey.shade700,
+              ),
+            ),
+            Positioned(
+              top: -2,
+              right: -2,
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFC107),
+                  borderRadius: BorderRadius.circular(6),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '$pendingCount',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10,
+                  ),
+                  maxLines: 1,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildNotificationPanel() {
     // Onay bekleyen siparişler
     final pendingOrders = _orders.where((order) => 
@@ -2648,7 +2820,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     // ⭐ Yanıp sönme animasyonu (StatefulWidget olmadan basit opacity pulse)
     return Container(
-        width: 240, // ⭐ 280 → 240 (Küçültüldü)
+        width: 200, // ⭐ Gereksiz boşluklar azaltıldı
         constraints: const BoxConstraints(maxHeight: 160), // ⭐ 200 → 160
         decoration: BoxDecoration(
           color: Colors.white,
@@ -2665,16 +2837,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         mainAxisSize: MainAxisSize.min,
         children: [
           // Header (⭐ Küçültüldü)
-          Container(
-            padding: const EdgeInsets.all(8), // ⭐ 12 → 8
-            decoration: const BoxDecoration(
-              color: Color(0xFFFFC107), // Sarı - Onay bekliyor
-              borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(12), // ⭐ 16 → 12
-                topRight: Radius.circular(12),
-              ),
+          InkWell(
+            onTap: () {
+              setState(() {
+                _notificationExpanded = false;
+              });
+            },
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(12),
+              topRight: Radius.circular(12),
             ),
-            child: Row(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6), // ⭐ 12 → 8
+              decoration: const BoxDecoration(
+                color: Color(0xFFFFC107), // Sarı - Onay bekliyor
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(12), // ⭐ 16 → 12
+                  topRight: Radius.circular(12),
+                ),
+              ),
+              child: Row(
               children: [
                 const Icon(
                   Icons.notifications_active,
@@ -2707,14 +2889,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                   ),
                 ),
+                const SizedBox(width: 4),
+                const Icon(
+                  Icons.chevron_left,
+                  size: 16,
+                  color: Colors.white,
+                ),
               ],
             ),
+          ),
           ),
           // Bildirim listesi
           Flexible(
             child: ListView.separated(
               shrinkWrap: true,
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
               itemCount: pendingOrders.length,
               separatorBuilder: (context, index) => const Divider(height: 1),
               itemBuilder: (context, index) {
@@ -2723,7 +2912,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   onTap: () => _showOrderBottomSheet(order),
                   borderRadius: BorderRadius.circular(6), // ⭐ 8 → 6
                   child: Padding(
-                    padding: const EdgeInsets.all(6), // ⭐ 8 → 6
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4), // ⭐ 8 → 6
                     child: Row(
                       children: [
                         // Platform ikonu
@@ -2732,7 +2921,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           color: const Color(0xFFFFC107),
                           size: 16, // ⭐ 20 → 16
                         ),
-                        const SizedBox(width: 6), // ⭐ 8 → 6
+                        const SizedBox(width: 4), // ⭐ 8 → 6
                         // Sipariş bilgisi
                         Expanded(
                           child: Column(
@@ -2825,12 +3014,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             onTap: _startDeliveryRoute,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
                       color: Colors.blue.shade50,
                       borderRadius: BorderRadius.circular(8),
@@ -2838,10 +3027,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     child: Icon(
                       Icons.directions,
                       color: Colors.blue.shade600,
-                      size: 24,
+                      size: 17,
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
@@ -2849,7 +3038,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       const Text(
                         'Dağıtıma Çık',
                         style: TextStyle(
-                          fontSize: 16,
+                          fontSize: 11,
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF212121),
                         ),
@@ -2857,7 +3046,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       Text(
                         '$ordersToRoute sipariş',
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 9,
                           color: Colors.grey[600],
                         ),
                       ),
@@ -2876,7 +3065,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
 
       return Container(
-        constraints: const BoxConstraints(maxWidth: 280),
+        constraints: const BoxConstraints(maxWidth: 155),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(12),
@@ -2889,7 +3078,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2898,7 +3087,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
                       color: Colors.blue.shade50,
                       borderRadius: BorderRadius.circular(8),
@@ -2906,22 +3095,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     child: Icon(
                       Icons.route,
                       color: Colors.blue.shade600,
-                      size: 20,
+                      size: 16,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
+                  Expanded(
+                    child: const Text(
                       'Aktif Rota',
                       style: TextStyle(
-                        fontSize: 16,
+                        fontSize: 11,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF212121),
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+                    icon: const Icon(Icons.close, size: 16),
                     onPressed: () {
                       setState(() {
                         _currentRoute = null;
@@ -2934,38 +3127,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               // Rota bilgileri
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
                 children: [
-                  Icon(Icons.location_on, size: 16, color: Colors.grey[600]),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${_currentRoute!.routePoints.length} durak',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[700],
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${_currentRoute!.routePoints.length} durak',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 16),
-                  Icon(Icons.straighten, size: 16, color: Colors.grey[600]),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${_currentRoute!.totalDistanceKm.toStringAsFixed(1)} km',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[700],
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Icon(Icons.access_time, size: 16, color: Colors.grey[600]),
-                  const SizedBox(width: 4),
-                  Text(
-                    '~${_currentRoute!.estimatedMinutes} dk',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[700],
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.straighten, size: 14, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${_currentRoute!.totalDistanceKm.toStringAsFixed(1)} km',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

@@ -31,6 +31,24 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "s_ddate",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "t_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "s_courier",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "s_stat",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "s_cdate",
           "order": "DESCENDING"
         }

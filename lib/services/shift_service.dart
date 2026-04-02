@@ -378,7 +378,20 @@ class ShiftService {
 
       // Mola süresi dolmuşsa otomatik müsait yap
       if (elapsedMinutes >= breakDuration) {
-        await courierDoc.reference.update({'s_stat': STATUS_AVAILABLE});
+        // Guard: Kurye OFFLINE ise AVAILABLE yapma
+        try {
+          final fresh = await courierDoc.reference.get();
+          final freshData = fresh.data() as Map<String, dynamic>? ?? {};
+          final currentStat = freshData['s_stat'] as int? ?? STATUS_OFFLINE;
+          if (currentStat != STATUS_OFFLINE) {
+            await courierDoc.reference.update({'s_stat': STATUS_AVAILABLE});
+          } else {
+            print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı (checkBreakStatus).');
+          }
+        } catch (e) {
+          print('⚠️ Guard kontrolü sırasında hata (checkBreakStatus): $e');
+          // Güvenli tarafta kal: statüyü değiştirme
+        }
 
         // 💾 Cache'i invalidate et
         LocationService.invalidateStatusCache();

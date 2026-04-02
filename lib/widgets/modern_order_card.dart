@@ -12,6 +12,25 @@ class ModernOrderCard extends StatelessWidget {
     required this.onTap,
   });
 
+  int? _getElapsedMinutes() {
+    if (order.sCdate == null) return null;
+    try {
+      return DateTime.now().difference(order.sCdate!).inMinutes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Color _getElapsedColor(int minutes) {
+    if (minutes <= 15) {
+      return Colors.black;
+    } else if (minutes <= 35) {
+      return Colors.amber;
+    } else {
+      return Colors.red;
+    }
+  }
+
   Color _getStatusBasedColor() {
     // ⭐ Platform bazlı renkler YOK - Durum bazlı renkler kullanılıyor
     final isPreparing = order.sStat == 4; // ⭐ Hazırlanıyor
@@ -63,6 +82,16 @@ class ModernOrderCard extends StatelessWidget {
     }
   }
 
+  String _getPayTypeLabel() {
+    if (order.ssPaytype == 0) {
+      return 'Nakit';
+    } else if (order.ssPaytype == 2) {
+      return 'Online Ödeme';
+    } else {
+      return 'Kredi Kartı';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // 5. Düzeltme: Onay sistemi
@@ -75,7 +104,7 @@ class ModernOrderCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 165, // ⭐ 200 → 165 (Ekrana 2 kart sığacak)
+        width: 140, // ⭐ Biraz daha daraltıldı
         margin: const EdgeInsets.only(right: 12),
         decoration: BoxDecoration(
           color: Colors.white,
@@ -93,7 +122,7 @@ class ModernOrderCard extends StatelessWidget {
           children: [
             // Header - Status Badge
             Container(
-              height: 60,
+              height: 48,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
@@ -113,19 +142,16 @@ class ModernOrderCard extends StatelessWidget {
                   // Onay badge (5. Düzeltme)
                   if (isWaitingForApproval)
                     Positioned(
-                      top: 8,
-                      right: 8,
+                      top: 6,
+                      right: 6,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.25),
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(7),
                           border: Border.all(
                             color: Colors.white.withOpacity(0.4),
-                            width: 1,
+                            width: 0.8,
                           ),
                         ),
                         child: const Row(
@@ -133,14 +159,14 @@ class ModernOrderCard extends StatelessWidget {
                           children: [
                             Icon(
                               Icons.notifications_active,
-                              size: 12,
+                              size: 10,
                               color: Colors.white,
                             ),
-                            SizedBox(width: 4),
+                            SizedBox(width: 3),
                             Text(
                               'ONAY BEKLİYOR',
                               style: TextStyle(
-                                fontSize: 9,
+                                fontSize: 8,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
                                 letterSpacing: 0.5,
@@ -153,12 +179,12 @@ class ModernOrderCard extends StatelessWidget {
                   
                   // Platform info
                   Padding(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(10),
                     child: Row(
                       children: [
                         Container(
-                          width: 36,
-                          height: 36,
+                          width: 30,
+                          height: 30,
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(10),
@@ -166,10 +192,10 @@ class ModernOrderCard extends StatelessWidget {
                           child: Icon(
                             _getPlatformIcon(),
                             color: statusColor,
-                            size: 20,
+                            size: 16,
                           ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -179,7 +205,7 @@ class ModernOrderCard extends StatelessWidget {
                               Text(
                                 order.sRestaurantName ?? order.sNameWork,
                                 style: const TextStyle(
-                                  fontSize: 12,
+                              fontSize: 10,
                                   fontWeight: FontWeight.w600,
                                   color: Colors.white,
                                 ),
@@ -189,7 +215,7 @@ class ModernOrderCard extends StatelessWidget {
                               Text(
                                 _getPlatformName(),
                                 style: TextStyle(
-                                  fontSize: 10,
+                              fontSize: 8,
                                   color: Colors.white.withOpacity(0.8),
                                 ),
                               ),
@@ -206,7 +232,7 @@ class ModernOrderCard extends StatelessWidget {
             // Content
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(10),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -215,7 +241,7 @@ class ModernOrderCard extends StatelessWidget {
                       children: [
                         Icon(
                           Icons.store,
-                          size: 16,
+                          size: 14,
                           color: statusColor,
                         ),
                         const SizedBox(width: 6),
@@ -226,7 +252,7 @@ class ModernOrderCard extends StatelessWidget {
                                 ? (order.sOrderscr == 0 ? 'Telefon Siparişi' : 'Restoran')
                                 : (order.sRestaurantName ?? order.sNameWork),
                             style: const TextStyle(
-                              fontSize: 14,
+                              fontSize: 12,
                               fontWeight: FontWeight.bold,
                               color: Color(0xFF212121),
                             ),
@@ -237,14 +263,14 @@ class ModernOrderCard extends StatelessWidget {
                       ],
                     ),
                     
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 4),
                     
                     // Müşteri
                     Row(
                       children: [
                         const Icon(
                           Icons.person_outline,
-                          size: 16,
+                          size: 14,
                           color: Color(0xFF757575),
                         ),
                         const SizedBox(width: 6),
@@ -252,7 +278,7 @@ class ModernOrderCard extends StatelessWidget {
                           child: Text(
                             order.ssFullname,
                             style: const TextStyle(
-                              fontSize: 13,
+                              fontSize: 11,
                               color: Color(0xFF424242),
                             ),
                             maxLines: 1,
@@ -262,7 +288,7 @@ class ModernOrderCard extends StatelessWidget {
                       ],
                     ),
                     
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 4),
                     
                     // Adres (⭐ s_stat=0 veya 4 ise gizle)
                     if (order.sStat != 0 && order.sStat != 4)
@@ -272,7 +298,7 @@ class ModernOrderCard extends StatelessWidget {
                           children: [
                             const Icon(
                               Icons.location_on_outlined,
-                              size: 16,
+                              size: 14,
                               color: Color(0xFF757575),
                             ),
                             const SizedBox(width: 6),
@@ -280,7 +306,7 @@ class ModernOrderCard extends StatelessWidget {
                               child: Text(
                                 order.ssAdres,
                                 style: const TextStyle(
-                                  fontSize: 12,
+                                  fontSize: 10,
                                   color: Color(0xFF616161),
                                   height: 1.3,
                                 ),
@@ -299,7 +325,7 @@ class ModernOrderCard extends StatelessWidget {
                                 ? '⏳ Hazırlanıyor...'
                                 : '🔒 Onay Bekliyor',
                             style: const TextStyle(
-                              fontSize: 12,
+                              fontSize: 10,
                               color: Color(0xFF9E9E9E),
                               fontStyle: FontStyle.italic,
                             ),
@@ -307,50 +333,59 @@ class ModernOrderCard extends StatelessWidget {
                         ),
                       ),
                     
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 6),
                     
                     // Tutar & Saat
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF4CAF50).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                Icons.payments,
-                                size: 14,
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _getPayTypeLabel(),
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Color(0xFF757575),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '₺${order.ssPaycount.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
                                 color: Color(0xFF4CAF50),
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '₺${order.ssPaycount.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF4CAF50),
-                                ),
-                              ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
-                        Text(
-                          order.sCdate != null
-                              ? '${order.sCdate!.hour.toString().padLeft(2, '0')}:${order.sCdate!.minute.toString().padLeft(2, '0')}'
-                              : '--:--',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Color(0xFF757575),
-                            fontWeight: FontWeight.w500,
-                          ),
+                        Builder(
+                          builder: (context) {
+                            final mins = _getElapsedMinutes();
+                            final displayText = mins != null ? '${mins} dk' : '-- dk';
+                            final color = mins != null ? _getElapsedColor(mins) : const Color(0xFF757575);
+                            return Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.schedule,
+                                  size: 11,
+                                  color: Color(0xFF757575),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  displayText,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: color,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
                         ),
                       ],
                     ),
@@ -361,7 +396,7 @@ class ModernOrderCard extends StatelessWidget {
 
             // Footer Button (5. Düzeltme: Onay → Teslim Al → Teslim Et)
             Container(
-              height: 48,
+              height: 42,
               decoration: BoxDecoration(
                 color: isPreparing
                     ? const Color(0xFFFF9800) // ⭐ Turuncu - Hazırlanıyor
@@ -385,7 +420,7 @@ class ModernOrderCard extends StatelessWidget {
                               ? 'TESLİM AL'
                               : 'TESLİM ET',
                   style: TextStyle(
-                    fontSize: isPreparing ? 11 : 14, // ⭐ Uzun text için küçük font
+                    fontSize: isPreparing ? 9 : 12, // ⭐ Biraz daha küçültüldü
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                     letterSpacing: 1,

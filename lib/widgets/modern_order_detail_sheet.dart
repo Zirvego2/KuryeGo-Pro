@@ -52,6 +52,25 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     _startButtonCountdownTimer(); // ⭐ Buton countdown timer'ı başlat
   }
 
+  int? _getElapsedMinutes() {
+    if (widget.order.sCdate == null) return null;
+    try {
+      return DateTime.now().difference(widget.order.sCdate!).inMinutes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Color _getElapsedColor(int minutes) {
+    if (minutes <= 15) {
+      return Colors.black;
+    } else if (minutes <= 35) {
+      return Colors.amber;
+    } else {
+      return Colors.red;
+    }
+  }
+
   @override
   void dispose() {
     _countdownTimer?.cancel();
@@ -2759,6 +2778,52 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
             ),
           ),
           const SizedBox(height: 12),
+          // ⏱️ Geçen Süre (renkli)
+          Builder(
+            builder: (context) {
+              final mins = _getElapsedMinutes();
+              final valueText = mins != null ? '${mins} dk' : '-- dk';
+              final valueColor = mins != null ? _getElapsedColor(mins) : const Color(0xFF212121);
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(Icons.schedule, color: Colors.grey, size: 16),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Geçen Süre',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          valueText,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: valueColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const Divider(height: 16),
           _buildInfoRow(
             icon: Icons.payments,
             label: 'Ödeme Tutarı',

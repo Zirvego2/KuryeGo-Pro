@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/courier_daily_log.dart';
+import 'break_service.dart';
 
 /// Vardiya Log Servisi
 /// Vardiya açma/kapama işlemlerini yönetir
@@ -285,6 +286,13 @@ class ShiftLogService {
           's_stat': 0, // OFFLINE - Vardiya kapalı
         });
         print('✅ Kurye statüsü güncellendi: s_stat=0 (OFFLINE)');
+
+        // ⭐ Ek güvenlik: Mola timer'ını durdur (otomatik 1'e çekmeyi önle)
+        try {
+          BreakService().stopAutoEndTimer(courierId);
+        } catch (e) {
+          print('⚠️ Mola timer durdurma uyarısı: $e');
+        }
       } catch (statusError) {
         print('❌ ❌ ❌ KRİTİK HATA: s_stat güncellenemedi: $statusError');
         // ⭐ ROLLBACK: Log güncellendi ama s_stat güncellenemedi - log'u geri al

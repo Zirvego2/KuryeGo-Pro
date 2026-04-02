@@ -253,10 +253,23 @@ class BreakService {
           .get();
 
       if (courierQuery.docs.isNotEmpty) {
-        await courierQuery.docs.first.reference.update({
-          's_stat': ShiftService.STATUS_AVAILABLE, // AVAILABLE = 1
-        });
-        print('✅ Kurye statüsü güncellendi: s_stat=1 (AVAILABLE)');
+        // Guard: Kurye OFFLINE ise AVAILABLE yapma
+        try {
+          final fresh = await courierQuery.docs.first.reference.get();
+          final freshData = fresh.data() as Map<String, dynamic>? ?? {};
+          final currentStat = freshData['s_stat'] as int? ?? ShiftService.STATUS_OFFLINE;
+          if (currentStat != ShiftService.STATUS_OFFLINE) {
+            await courierQuery.docs.first.reference.update({
+              's_stat': ShiftService.STATUS_AVAILABLE, // AVAILABLE = 1
+            });
+            print('✅ Kurye statüsü güncellendi: s_stat=1 (AVAILABLE)');
+          } else {
+            print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı (endBreak).');
+          }
+        } catch (e) {
+          print('⚠️ Guard kontrolü sırasında hata (endBreak): $e');
+          // Güvenli tarafta kal: statüyü değiştirme
+        }
       }
 
       print('✅ Mola bitirildi: $breakMinutes dk kullanıldı, Kalan: $breakRemaining dk');
@@ -289,6 +302,21 @@ class BreakService {
   Future<Map<String, dynamic>> autoEndBreak(int courierId, String logDocId) async {
     try {
       print('⏰ Otomatik mola bitirme: courierId=$courierId, logDocId=$logDocId');
+
+    // Guard: Kurye OFFLINE ise s_stat'ı AVAILABLE(1) yapma
+    bool isCourierOffline = false;
+    try {
+      final cq = await _db
+          .collection('t_courier')
+          .where('s_id', isEqualTo: courierId)
+          .limit(1)
+          .get();
+      if (!cq.docs.isEmpty) {
+        final cd = cq.docs.first.data();
+        final currentStat = cd['s_stat'] as int? ?? 0;
+        isCourierOffline = (currentStat == ShiftService.STATUS_OFFLINE);
+      }
+    } catch (_) {}
 
       final logDoc = await _db.collection(_collectionName).doc(logDocId).get();
       if (!logDoc.exists) {
@@ -368,15 +396,19 @@ class BreakService {
           print('✅ ✅ ✅ Firestore güncellemesi başarılı (fallback)! Status: ACTIVE');
           
           // ⭐ KRİTİK: t_courier collection'ındaki s_stat field'ını da güncelle (UI güncellenmesi için)
-          try {
-            print('📝 t_courier collection güncelleniyor (fallback): s_stat: BREAK → AVAILABLE (courierId=$courierId)');
-            await FirebaseService.updateCourierStatus(
-              courierId,
-              ShiftService.STATUS_AVAILABLE,
-            );
-            print('✅ ✅ ✅ t_courier collection güncellendi (fallback)! s_stat: AVAILABLE (courierId=$courierId)');
-          } catch (statusUpdateError) {
-            print('❌ ❌ ❌ t_courier collection güncelleme hatası (fallback): $statusUpdateError');
+          if (!isCourierOffline) {
+            try {
+              print('📝 t_courier collection güncelleniyor (fallback): s_stat: BREAK → AVAILABLE (courierId=$courierId)');
+              await FirebaseService.updateCourierStatus(
+                courierId,
+                ShiftService.STATUS_AVAILABLE,
+              );
+              print('✅ ✅ ✅ t_courier collection güncellendi (fallback)! s_stat: AVAILABLE (courierId=$courierId)');
+            } catch (statusUpdateError) {
+              print('❌ ❌ ❌ t_courier collection güncelleme hatası (fallback): $statusUpdateError');
+            }
+          } else {
+            print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı (fallback).');
           }
           
           _stopAutoEndTimer(courierId);
@@ -477,17 +509,21 @@ class BreakService {
       print('✅ Mola otomatik bitirildi: $breakMinutesClamped dk kullanıldı, Kalan: $breakRemaining dk, Status: ACTIVE');
 
       // ⭐ KRİTİK: t_courier collection'ındaki s_stat field'ını da güncelle (UI güncellenmesi için)
-      try {
-        print('📝 t_courier collection güncelleniyor: s_stat: BREAK → AVAILABLE (courierId=$courierId)');
-        await FirebaseService.updateCourierStatus(
-          courierId,
-          ShiftService.STATUS_AVAILABLE,
-        );
-        print('✅ ✅ ✅ t_courier collection güncellendi! s_stat: AVAILABLE (courierId=$courierId)');
-      } catch (statusUpdateError) {
-        print('❌ ❌ ❌ t_courier collection güncelleme hatası: $statusUpdateError');
-        // Bu hata kritik değil, çünkü courier_daily_logs güncellendi
-        // Ama UI güncellenmeyebilir, bu yüzden log yazıyoruz
+      if (!isCourierOffline) {
+        try {
+          print('📝 t_courier collection güncelleniyor: s_stat: BREAK → AVAILABLE (courierId=$courierId)');
+          await FirebaseService.updateCourierStatus(
+            courierId,
+            ShiftService.STATUS_AVAILABLE,
+          );
+          print('✅ ✅ ✅ t_courier collection güncellendi! s_stat: AVAILABLE (courierId=$courierId)');
+        } catch (statusUpdateError) {
+          print('❌ ❌ ❌ t_courier collection güncelleme hatası: $statusUpdateError');
+          // Bu hata kritik değil, çünkü courier_daily_logs güncellendi
+          // Ama UI güncellenmeyebilir, bu yüzden log yazıyoruz
+        }
+      } else {
+        print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı.');
       }
 
       // Timer'ı durdur
@@ -727,6 +763,11 @@ class BreakService {
       _autoEndTimers.remove(courierId);
       print('🛑 Otomatik bitiş timer durduruldu: courierId=$courierId');
     }
+  }
+
+  /// Public: Otomatik bitiş timer'ını dışarıdan durdur
+  void stopAutoEndTimer(int courierId) {
+    _stopAutoEndTimer(courierId);
   }
 
   /// Mola dakikasını hesapla (ceil/round tutarlı)
