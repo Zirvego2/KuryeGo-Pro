@@ -1430,7 +1430,7 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             ListTile(
               leading: const Icon(Icons.store, color: Colors.blue),
               title: const Text('Restoran Adı'),
-              subtitle: Text(widget.order.sRestaurantName ?? widget.order.sNameWork),
+              subtitle: Text(widget.order.sNameWork.isNotEmpty ? widget.order.sNameWork : 'İşletme'),
             ),
             ListTile(
               leading: const Icon(Icons.location_on, color: Colors.green),

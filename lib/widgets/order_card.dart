@@ -6,11 +6,13 @@ import '../models/order_model.dart';
 class OrderCard extends StatelessWidget {
   final OrderModel order;
   final VoidCallback onTap;
+  final String? dynamicWorkName;
 
   const OrderCard({
     super.key,
     required this.order,
     required this.onTap,
+    this.dynamicWorkName,
   });
 
   @override
@@ -132,7 +134,9 @@ class OrderCard extends StatelessWidget {
                         // Restoran adı
                         _buildInfoRow(
                           icon: Icons.restaurant_menu,
-                          text: order.sRestaurantName ?? order.sNameWork,
+                          text: (dynamicWorkName != null && dynamicWorkName!.isNotEmpty)
+                              ? dynamicWorkName!
+                              : (order.sNameWork.isEmpty ? 'İşletme' : order.sNameWork),
                           fontSize: 14,
                         ),
                         const SizedBox(height: 8),

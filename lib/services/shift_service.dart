@@ -376,31 +376,14 @@ class ShiftService {
       final now = DateTime.now();
       final elapsedMinutes = now.difference(breakStartTime).inMinutes;
 
-      // Mola süresi dolmuşsa otomatik müsait yap
+      // Mola süresi dolmuşsa: Cloud Function (autoEndCourierBreaks) bunu işledi.
+      // Uygulama tarafında s_stat güncellemesi yapılmıyor.
       if (elapsedMinutes >= breakDuration) {
-        // Guard: Kurye OFFLINE ise AVAILABLE yapma
-        try {
-          final fresh = await courierDoc.reference.get();
-          final freshData = fresh.data() as Map<String, dynamic>? ?? {};
-          final currentStat = freshData['s_stat'] as int? ?? STATUS_OFFLINE;
-          if (currentStat != STATUS_OFFLINE) {
-            await courierDoc.reference.update({'s_stat': STATUS_AVAILABLE});
-          } else {
-            print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı (checkBreakStatus).');
-          }
-        } catch (e) {
-          print('⚠️ Guard kontrolü sırasında hata (checkBreakStatus): $e');
-          // Güvenli tarafta kal: statüyü değiştirme
-        }
-
-        // 💾 Cache'i invalidate et
-        LocationService.invalidateStatusCache();
-
         return {
           'success': true,
           'onBreak': false,
-          'message': '✅ Mola süresi doldu. Artık müsaitsiniz.',
-          'autoActivated': true,
+          'message': '✅ Mola süresi doldu. Cloud Function tarafından müsait yapılacak.',
+          'autoActivated': false,
         };
       }
 
@@ -428,6 +411,15 @@ class ShiftService {
 
       if (courierQuery.docs.isEmpty) {
         return {'success': false, 'message': '❌ Kullanıcı bulunamadı'};
+      }
+
+      // Guard: Kurye OFFLINE ise AVAILABLE yapma
+      final freshDoc = await courierQuery.docs.first.reference.get();
+      final freshData = freshDoc.data() as Map<String, dynamic>? ?? {};
+      final currentStat = freshData['s_stat'] as int? ?? STATUS_OFFLINE;
+      if (currentStat == STATUS_OFFLINE) {
+        print('ℹ️ Guard: Kurye OFFLINE, endBreak s_stat değiştirilmedi.');
+        return {'success': true, 'message': '✅ Mola sonlandırıldı.'};
       }
 
       await courierQuery.docs.first.reference.update({'s_stat': STATUS_AVAILABLE});

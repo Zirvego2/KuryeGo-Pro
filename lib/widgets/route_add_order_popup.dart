@@ -128,7 +128,7 @@ class RouteAddOrderPopup extends StatelessWidget {
                           Text(
                             order.sNameWork.isNotEmpty
                                 ? order.sNameWork
-                                : order.sRestaurantName ?? 'İşletme',
+                                : 'İşletme',
                             style: TextStyle(
                               color: Colors.orange.shade900,
                               fontSize: 20,

@@ -439,7 +439,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               final order = OrderModel.fromFirestore(orderData, orderDocId);
               final businessName = order.sNameWork.isNotEmpty 
                   ? order.sNameWork 
-                  : order.sRestaurantName ?? 'İşletme';
+                  : 'İşletme';
               
               print('✅ ✅ ✅ Sipariş hazırlandı bildirimi gösteriliyor: $businessName');
               _showOrderReadyNotification(businessName);
@@ -488,7 +488,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               
               final businessName = newOrder.sNameWork.isNotEmpty 
                   ? newOrder.sNameWork 
-                  : newOrder.sRestaurantName ?? 'İşletme';
+                  : 'İşletme';
               
               print('   📦 İşletme: $businessName');
               print('   📊 Stat: $orderStat, Önceki stat: $previousStat, İşlenmiş: ${_processedOrderIds.contains(orderDocId)}');
@@ -1648,7 +1648,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               icon: BitmapDescriptor.defaultMarkerWithHue(
                   BitmapDescriptor.hueOrange),
               infoWindow: InfoWindow(
-                title: 'İşletme: ${order.sRestaurantName ?? order.sNameWork}',
+                title: 'İşletme: ${order.sNameWork.isEmpty ? 'İşletme' : order.sNameWork}',
                 snippet: order.sWorkAdres,
               ),
               onTap: () => _showOrderBottomSheet(order),
@@ -2548,6 +2548,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             final order = _filteredOrders[index];
                             return ModernOrderCard(
                               order: order,
+                              dynamicWorkName: _restaurants[order.sWork]?['s_name'] as String?,
                               onTap: () => _showOrderBottomSheet(order),
                             );
                           },
@@ -2928,7 +2929,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                order.sRestaurantName ?? order.sNameWork,
+                                order.sNameWork.isEmpty ? 'İşletme' : order.sNameWork,
                                 style: const TextStyle(
                                   fontSize: 10, // ⭐ 12 → 10
                                   fontWeight: FontWeight.bold,
@@ -3249,7 +3250,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       children: [
                         Expanded(
                           child: Text(
-                            order.sRestaurantName ?? order.sNameWork,
+                            order.sNameWork.isEmpty ? 'İşletme' : order.sNameWork,
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,

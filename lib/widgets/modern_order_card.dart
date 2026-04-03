@@ -5,11 +5,13 @@ import '../models/order_model.dart';
 class ModernOrderCard extends StatelessWidget {
   final OrderModel order;
   final VoidCallback onTap;
+  final String? dynamicWorkName;
 
   const ModernOrderCard({
     super.key,
     required this.order,
     required this.onTap,
+    this.dynamicWorkName,
   });
 
   int? _getElapsedMinutes() {
@@ -203,7 +205,9 @@ class ModernOrderCard extends StatelessWidget {
                             children: [
                               // 6. Düzeltme: Restoran ismi göster
                               Text(
-                                order.sRestaurantName ?? order.sNameWork,
+                                (dynamicWorkName != null && dynamicWorkName!.isNotEmpty) 
+                                    ? dynamicWorkName! 
+                                    : (order.sNameWork.isEmpty ? 'İşletme' : order.sNameWork),
                                 style: const TextStyle(
                               fontSize: 10,
                                   fontWeight: FontWeight.w600,
@@ -247,10 +251,10 @@ class ModernOrderCard extends StatelessWidget {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            // ⭐ Telefon siparişi için fallback
-                            (order.sRestaurantName?.isEmpty ?? true) && (order.sNameWork.isEmpty)
+                            // ⭐ Telefon siparişi için fallback (Önce dynamicWorkName deneniyor)
+                            ((dynamicWorkName?.isEmpty ?? true) && order.sNameWork.isEmpty)
                                 ? (order.sOrderscr == 0 ? 'Telefon Siparişi' : 'Restoran')
-                                : (order.sRestaurantName ?? order.sNameWork),
+                                : (dynamicWorkName?.isNotEmpty == true ? dynamicWorkName! : order.sNameWork),
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
@@ -290,8 +294,8 @@ class ModernOrderCard extends StatelessWidget {
                     
                     const SizedBox(height: 4),
                     
-                    // Adres (⭐ s_stat=0 veya 4 ise gizle)
-                    if (order.sStat != 0 && order.sStat != 4)
+                    // Adres (⭐ Onay bekliyor veya hazırlanıyor ise gizle)
+                    if (!isPreparing && !isWaitingForApproval)
                       Expanded(
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -321,7 +325,7 @@ class ModernOrderCard extends StatelessWidget {
                       Expanded(
                         child: Center(
                           child: Text(
-                            order.sStat == 4 
+                            isPreparing 
                                 ? '⏳ Hazırlanıyor...'
                                 : '🔒 Onay Bekliyor',
                             style: const TextStyle(

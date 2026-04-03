@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/courier_daily_log.dart';
 import 'break_service.dart';
+import 'shift_service.dart';
+import 'location_service.dart';
 
 /// Vardiya Log Servisi
 /// Vardiya açma/kapama işlemlerini yönetir
@@ -286,6 +288,9 @@ class ShiftLogService {
           's_stat': 0, // OFFLINE - Vardiya kapalı
         });
         print('✅ Kurye statüsü güncellendi: s_stat=0 (OFFLINE)');
+
+        // ⭐ KRİTİK: Background Location Service'in cache'ini temizle
+        LocationService.invalidateStatusCache();
 
         // ⭐ Ek güvenlik: Mola timer'ını durdur (otomatik 1'e çekmeyi önle)
         try {

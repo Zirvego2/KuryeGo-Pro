@@ -321,7 +321,7 @@ class _NewOrderPopupState extends State<NewOrderPopup>
                             Text(
                               widget.order.sNameWork.isNotEmpty
                                   ? widget.order.sNameWork
-                                  : widget.order.sRestaurantName ?? 'İşletme',
+                                  : 'İşletme',
                               style: TextStyle(
                                 color: Colors.blue.shade900,
                                 fontSize: 20,

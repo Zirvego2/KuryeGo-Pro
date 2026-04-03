@@ -124,7 +124,7 @@ class _PoolOrdersScreenState extends State<PoolOrdersScreen> {
   }
 
   Future<void> _confirmAndClaim(BuildContext context, OrderModel order) async {
-    final workName = _workNames[order.sWork] ?? order.sRestaurantName ?? order.sNameWork;
+    final workName = _workNames[order.sWork] ?? (order.sNameWork.isNotEmpty ? order.sNameWork : null) ?? 'İşletme';
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -364,11 +364,9 @@ class _PoolOrdersScreenState extends State<PoolOrdersScreen> {
                     final order = orders[index];
                     // t_work'ten gelen ad öncelikli, yoksa sipariş içindeki ad
                     final tWorkName = _workNames[order.sWork];
-                    final fallback = order.sRestaurantName?.isNotEmpty == true
-                        ? order.sRestaurantName!
-                        : order.sNameWork.isNotEmpty
-                            ? order.sNameWork
-                            : 'İşletme #${order.sWork}';
+                    final fallback = order.sNameWork.isNotEmpty
+                        ? order.sNameWork
+                        : 'İşletme #${order.sWork}';
                     final displayName = (tWorkName != null && tWorkName.isNotEmpty)
                         ? tWorkName
                         : fallback;

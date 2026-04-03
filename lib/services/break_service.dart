@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/courier_daily_log.dart';
 import 'shift_log_service.dart';
-import 'firebase_service.dart';
 import 'shift_service.dart';
+import 'location_service.dart';
 
 /// Mola Servisi
 /// Parça parça mola başlatma/bitirme ve otomatik bitiş yönetimi
@@ -19,8 +19,6 @@ class BreakService {
   // Otomatik bitiş kontrolü için timer (her kurye için)
   final Map<int, Timer> _autoEndTimers = {};
   
-  // Fallback kontrolü için flag (duplicate çağrıları önlemek için)
-  final Map<int, bool> _fallbackInProgress = {};
 
   /// Molaya çık (parça parça)
   /// 
@@ -180,6 +178,24 @@ class BreakService {
       }
 
       if (activeLog.status != 'BREAK') {
+        // ⭐ SELF-HEALING (KENDİNİ ONARMA):
+        // Eğer courier_daily_log zaten 'ACTIVE' ise ama UI'da hala MOLA butonunu görüyorsa,
+        // Bu s_stat'ın 3'te takılı kaldığını (desenkronizasyon) gösterir.
+        // Bu durumda hataya düşmek yerine sadece s_stat'ı 1 (AVAILABLE) yapıp kurtaralım.
+        final bugQuery = await _db.collection('t_courier').where('s_id', isEqualTo: courierId).limit(1).get();
+        if (bugQuery.docs.isNotEmpty) {
+           final statFix = bugQuery.docs.first.data()['s_stat'] as int? ?? 0;
+           if (statFix == ShiftService.STATUS_BREAK) {
+             print('🛠️ KENDİNİ ONARMA: Log ACTIVE ama s_stat=3. s_stat=1 yapılıyor...');
+             await bugQuery.docs.first.reference.update({'s_stat': ShiftService.STATUS_AVAILABLE});
+             LocationService.invalidateStatusCache();
+             return {
+               'success': true,
+               'message': '✅ Senkronizasyon düzeltildi, mola bitirildi!',
+             };
+           }
+        }
+
         return {
           'success': false,
           'message': '⚠️ Şu anda molada değilsiniz!',
@@ -268,7 +284,6 @@ class BreakService {
           }
         } catch (e) {
           print('⚠️ Guard kontrolü sırasında hata (endBreak): $e');
-          // Güvenli tarafta kal: statüyü değiştirme
         }
       }
 
@@ -302,21 +317,6 @@ class BreakService {
   Future<Map<String, dynamic>> autoEndBreak(int courierId, String logDocId) async {
     try {
       print('⏰ Otomatik mola bitirme: courierId=$courierId, logDocId=$logDocId');
-
-    // Guard: Kurye OFFLINE ise s_stat'ı AVAILABLE(1) yapma
-    bool isCourierOffline = false;
-    try {
-      final cq = await _db
-          .collection('t_courier')
-          .where('s_id', isEqualTo: courierId)
-          .limit(1)
-          .get();
-      if (!cq.docs.isEmpty) {
-        final cd = cq.docs.first.data();
-        final currentStat = cd['s_stat'] as int? ?? 0;
-        isCourierOffline = (currentStat == ShiftService.STATUS_OFFLINE);
-      }
-    } catch (_) {}
 
       final logDoc = await _db.collection(_collectionName).doc(logDocId).get();
       if (!logDoc.exists) {
@@ -395,21 +395,8 @@ class BreakService {
           });
           print('✅ ✅ ✅ Firestore güncellemesi başarılı (fallback)! Status: ACTIVE');
           
-          // ⭐ KRİTİK: t_courier collection'ındaki s_stat field'ını da güncelle (UI güncellenmesi için)
-          if (!isCourierOffline) {
-            try {
-              print('📝 t_courier collection güncelleniyor (fallback): s_stat: BREAK → AVAILABLE (courierId=$courierId)');
-              await FirebaseService.updateCourierStatus(
-                courierId,
-                ShiftService.STATUS_AVAILABLE,
-              );
-              print('✅ ✅ ✅ t_courier collection güncellendi (fallback)! s_stat: AVAILABLE (courierId=$courierId)');
-            } catch (statusUpdateError) {
-              print('❌ ❌ ❌ t_courier collection güncelleme hatası (fallback): $statusUpdateError');
-            }
-          } else {
-            print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı (fallback).');
-          }
+          // ⭐ s_stat güncellemesi Cloud Function'a (autoEndCourierBreaks) bırakıldı.
+          print('ℹ️ autoEndBreak fallback: s_stat güncellemesi Cloud Function tarafından yapılacak.');
           
           _stopAutoEndTimer(courierId);
           return {
@@ -469,62 +456,18 @@ class BreakService {
         minutes: breakMinutesClamped,
       );
 
-      // ⭐ KRİTİK: Firestore'u güncelle (status ACTIVE olmalı)
-      try {
-        print('📝 Firestore güncellemesi yapılıyor: logDocId=$logDocId');
-        print('   status: BREAK → ACTIVE');
-        print('   breakUsedMinutes: ${activeLog.breakUsedMinutes} → $totalBreakUsed');
-        print('   breakRemainingMinutes: ${activeLog.breakRemainingMinutes} → $breakRemaining');
-        
-        await _db.collection(_collectionName).doc(logDocId).update({
-          'status': 'ACTIVE',
-          'breakUsedMinutes': totalBreakUsed,
-          'breakRemainingMinutes': breakRemaining,
-          'breaks': updatedBreaks.map((b) => b.toMap()).toList(),
-        });
-        
-        // Güncellemeyi doğrula (opsiyonel ama güvenlik için)
-        final verifyDoc = await _db.collection(_collectionName).doc(logDocId).get();
-        if (verifyDoc.exists) {
-          final verifyData = verifyDoc.data();
-          final verifyStatus = verifyData?['status'] as String?;
-          if (verifyStatus == 'ACTIVE') {
-            print('✅ ✅ ✅ Firestore güncellemesi başarılı ve doğrulandı! Status: $verifyStatus');
-          } else {
-            print('⚠️ ⚠️ ⚠️ UYARI: Firestore güncellendi ama status hala BREAK! (Status: $verifyStatus)');
-          }
-        } else {
-          print('⚠️ ⚠️ ⚠️ UYARI: Firestore güncellendi ama doküman bulunamadı!');
-        }
-      } catch (firestoreError) {
-        print('❌ ❌ ❌ Firestore güncelleme hatası: $firestoreError');
-        print('   Stack trace: ${StackTrace.current}');
-        _stopAutoEndTimer(courierId);
-        return {
-          'success': false,
-          'message': '❌ Firestore güncelleme hatası: $firestoreError',
-        };
-      }
+      // ⭐ KRİTİK: Firestore'u güncelleme görevini TAMAMEN Cloud Function'a devrettik.
+      // Eğer uygulama buradan logu ACTIVE yaparsa, Cloud Function "bu kişinin molası bitmiş" deyip es geçer
+      // ve kuryenin s_stat'ı 3'te (MOLA) sonsuza dek takılı kalır!
+      // Bu yüzden buradaki tüm veritabanı yazma işlemlerini KONTROLLÜ olarak devre dışı bıraktık.
+      
+      print('ℹ️ Mola süresi bitti. Firestore güncellemeleri (log ve s_stat) Cloud Function tarafından işlenecek.');
 
       print('✅ Mola otomatik bitirildi: $breakMinutesClamped dk kullanıldı, Kalan: $breakRemaining dk, Status: ACTIVE');
 
-      // ⭐ KRİTİK: t_courier collection'ındaki s_stat field'ını da güncelle (UI güncellenmesi için)
-      if (!isCourierOffline) {
-        try {
-          print('📝 t_courier collection güncelleniyor: s_stat: BREAK → AVAILABLE (courierId=$courierId)');
-          await FirebaseService.updateCourierStatus(
-            courierId,
-            ShiftService.STATUS_AVAILABLE,
-          );
-          print('✅ ✅ ✅ t_courier collection güncellendi! s_stat: AVAILABLE (courierId=$courierId)');
-        } catch (statusUpdateError) {
-          print('❌ ❌ ❌ t_courier collection güncelleme hatası: $statusUpdateError');
-          // Bu hata kritik değil, çünkü courier_daily_logs güncellendi
-          // Ama UI güncellenmeyebilir, bu yüzden log yazıyoruz
-        }
-      } else {
-        print('ℹ️ Guard: Kurye OFFLINE, s_stat AVAILABLE yapılmadı.');
-      }
+      // ⭐ s_stat güncellemesi Cloud Function'a (autoEndCourierBreaks) bırakıldı.
+      // Cloud Function her 1 dakikada çalışır: s_stat=3 → s_stat=1 (guard ile).
+      print('ℹ️ autoEndBreak: s_stat güncellemesi Cloud Function tarafından yapılacak.');
 
       // Timer'ı durdur
       _stopAutoEndTimer(courierId);
@@ -612,53 +555,8 @@ class BreakService {
       final remainingMinutes = (remainingTotalSeconds / 60).floor().clamp(0, double.infinity).toInt();
       final remainingSeconds = (remainingTotalSeconds % 60).clamp(0, 59).toInt();
 
-      // ⭐ KRİTİK: Eğer kalan süre 0 veya negatifse ve status hala BREAK ise, timer çalışmıyor demektir
-      // Bu durumda otomatik bitiş tetiklenmeli (fallback mekanizma)
-      if (remainingTotalSeconds <= 0 && activeLog.status == 'BREAK') {
-        // ⭐ Duplicate çağrıları önle
-        if (_fallbackInProgress[courierId] == true) {
-          print('⏳ Fallback zaten çalışıyor, bekleniyor... (courierId=$courierId)');
-          return {
-            'elapsedMinutes': elapsedMinutes,
-            'elapsedSeconds': elapsedSeconds,
-            'elapsedFormatted': '${elapsedMinutes.toString().padLeft(2, '0')}:${elapsedSeconds.toString().padLeft(2, '0')}',
-            'remainingMinutes': 0,
-            'remainingSeconds': 0,
-            'remainingFormatted': '00:00',
-            'breakStartAt': activeBreak.startAt,
-          };
-        }
-        
-        print('⚠️ ⚠️ ⚠️ KRİTİK UYARI: Kalan süre 0 veya negatif ama status hala BREAK!');
-        print('   Geçen: ${elapsedMinutes}m ${elapsedSeconds}s');
-        print('   RemainingAtStart: $remainingAtStart dk');
-        print('   Kalan süre: ${remainingTotalSeconds}s (${remainingMinutes}m ${remainingSeconds}s)');
-        print('   Timer çalışmıyor olabilir! Otomatik bitiş tetikleniyor...');
-        
-        // ⭐ FALLBACK: Timer çalışmamışsa burada tetikle
-        if (activeLog.docId != null) {
-          _fallbackInProgress[courierId] = true;
-          
-          Future.microtask(() async {
-            try {
-              print('🚀 Fallback: Otomatik bitiş tetikleniyor (getCurrentBreakInfo içinden)...');
-              final result = await autoEndBreak(courierId, activeLog.docId!);
-              if (result['success'] == true) {
-                print('✅ ✅ ✅ Fallback otomatik bitiş başarılı! Kurye müsait durumuna döndü.');
-              } else {
-                print('❌ ❌ ❌ Fallback otomatik bitiş hatası: ${result['message']}');
-              }
-            } catch (e) {
-              print('❌ ❌ ❌ Fallback otomatik bitiş exception: $e');
-            } finally {
-              // Flag'i temizle (5 saniye sonra, duplicate çağrıları önlemek için)
-              Future.delayed(const Duration(seconds: 5), () {
-                _fallbackInProgress.remove(courierId);
-              });
-            }
-          });
-        }
-      }
+      // ⭐ Kalan süre 0 veya negatifse, Cloud Function bunu yakında işleyecek (her 1 dk çalışır).
+      // Uygulama tarafında s_stat güncellemesi yapılmıyor, duplicate sorununu önler.
 
       return {
         'elapsedMinutes': elapsedMinutes,
