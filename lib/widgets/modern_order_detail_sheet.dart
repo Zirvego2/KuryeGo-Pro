@@ -92,11 +92,19 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     });
   }
 
-  /// ⭐ Restoran bilgilerini t_work collection'ından çek
+  /// ⭐ Restoran bilgilerini yükle
+  /// Önce siparişin kendi s_restaurantName alanını kullan,
+  /// adres/telefon ve fallback için t_work collection'ına bak
   Future<void> _loadRestaurantInfo() async {
     try {
       print('📍 Restoran bilgileri yükleniyor... s_work: ${widget.order.sWork}');
-      
+
+      // ⭐ Sipariş üzerindeki s_restaurantName varsa direkt kullan
+      final orderRestaurantName = widget.order.sRestaurantName;
+      if (orderRestaurantName != null && orderRestaurantName.isNotEmpty) {
+        print('✅ s_restaurantName sipariş verisinden alındı: $orderRestaurantName');
+      }
+
       final workQuery = await FirebaseFirestore.instance
           .collection('t_work')
           .where('s_id', isEqualTo: widget.order.sWork)
@@ -107,7 +115,10 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         final workData = workQuery.docs.first.data();
         
         setState(() {
-          _restaurantName = workData['s_name'] ?? 'Restoran Adı Yok';
+          // ⭐ Önce siparişin kendi s_restaurantName'ini kullan, yoksa t_work'ten al
+          _restaurantName = (orderRestaurantName?.isNotEmpty == true)
+              ? orderRestaurantName!
+              : (workData['s_name'] ?? 'Restoran Adı Yok');
           _restaurantPhone = workData['s_phone'] ?? '';
           
           // Adres bilgisi
@@ -133,12 +144,24 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         print('   Adres: $_restaurantAddress');
         print('   Telefon: $_restaurantPhone');
       } else {
+        // t_work bulunamadı — sadece s_restaurantName ile devam et
         print('⚠️ t_work collection\'ında s_id=${widget.order.sWork} bulunamadı!');
-        setState(() => _isLoadingRestaurant = false);
+        setState(() {
+          if (orderRestaurantName?.isNotEmpty == true) {
+            _restaurantName = orderRestaurantName!;
+          }
+          _isLoadingRestaurant = false;
+        });
       }
     } catch (e) {
       print('❌ Restoran bilgileri yüklenirken hata: $e');
-      setState(() => _isLoadingRestaurant = false);
+      setState(() {
+        final fallback = widget.order.sRestaurantName;
+        if (fallback?.isNotEmpty == true) {
+          _restaurantName = fallback!;
+        }
+        _isLoadingRestaurant = false;
+      });
     }
   }
 

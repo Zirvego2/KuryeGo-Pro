@@ -203,25 +203,15 @@ class ModernOrderCard extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              // 6. Düzeltme: Restoran ismi göster
                               Text(
-                                (dynamicWorkName != null && dynamicWorkName!.isNotEmpty) 
-                                    ? dynamicWorkName! 
-                                    : (order.sNameWork.isEmpty ? 'İşletme' : order.sNameWork),
+                                _getPlatformName(),
                                 style: const TextStyle(
-                              fontSize: 10,
+                                  fontSize: 10,
                                   fontWeight: FontWeight.w600,
                                   color: Colors.white,
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                              ),
-                              Text(
-                                _getPlatformName(),
-                                style: TextStyle(
-                              fontSize: 8,
-                                  color: Colors.white.withOpacity(0.8),
-                                ),
                               ),
                             ],
                           ),
@@ -251,10 +241,14 @@ class ModernOrderCard extends StatelessWidget {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            // ⭐ Telefon siparişi için fallback (Önce dynamicWorkName deneniyor)
-                            ((dynamicWorkName?.isEmpty ?? true) && order.sNameWork.isEmpty)
-                                ? (order.sOrderscr == 0 ? 'Telefon Siparişi' : 'Restoran')
-                                : (dynamicWorkName?.isNotEmpty == true ? dynamicWorkName! : order.sNameWork),
+                            // ⭐ Öncelik: s_restaurantName → dynamicWorkName → sNameWork → fallback
+                            (order.sRestaurantName?.isNotEmpty == true)
+                                ? order.sRestaurantName!
+                                : (dynamicWorkName?.isNotEmpty == true
+                                    ? dynamicWorkName!
+                                    : (order.sNameWork.isNotEmpty
+                                        ? order.sNameWork
+                                        : (order.sOrderscr == 0 ? 'Telefon Siparişi' : 'Restoran'))),
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
