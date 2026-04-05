@@ -47,6 +47,9 @@ class OrderModel {
   final DateTime? sAcceptedAt;          // Onaylanma zamanı
   final DateTime? sRejectedAt;          // Red zamanı
 
+  // Teslimat tipi: 1 = Platform Valesi, 2 = Zirvego Kuryesi
+  final int sDeliveryType;
+
   // JaviPos API için
   final String? clientId; // ClientId (UserId için)
   final String? javiPosid; // JaviPosid (Id için)
@@ -89,6 +92,7 @@ class OrderModel {
     this.sCourierResponseTime,
     this.sAcceptedAt,
     this.sRejectedAt,
+    this.sDeliveryType = 2,
     this.clientId,
     this.javiPosid,
     this.paymentMethodId,
@@ -170,6 +174,7 @@ class OrderModel {
       sRejectedAt: data['s_rejected_at'] != null
           ? (data['s_rejected_at'] as Timestamp).toDate()
           : null,
+      sDeliveryType: data['s_delivery_type'] is int ? data['s_delivery_type'] : int.tryParse('${data['s_delivery_type'] ?? ''}') ?? 2,
       clientId: data['ClientId']?.toString(),
       javiPosid: data['JaviPosid']?.toString(),
       paymentMethodId: data['paymentMethodOriginal'] == null

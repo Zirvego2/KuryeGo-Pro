@@ -57,6 +57,9 @@ class PoolOrderService {
       final orders = snapshot.docs
           .map((doc) => OrderModel.fromFirestore(doc.data(), doc.id))
           .where((order) {
+        // 🚴 Platform Valesi siparişlerini havuzdan çıkar
+        // s_delivery_type == 1 → Platform kendi kuryesiyle teslim eder, havuzda görünmez
+        if (order.sDeliveryType == 1) return false;
         if (scope == 'all') return true;
         return allowedBusinessIds.contains(order.sWork);
       }).toList();
