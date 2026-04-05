@@ -372,9 +372,13 @@ class _PoolOrdersScreenState extends State<PoolOrdersScreen> {
                         : fallback;
 
                     final km = double.tryParse(order.sDinstance) ?? 0;
+                    // Ödeme metni: öncelik s_odeme_adi, yoksa ss_paytype map'i
+                    final String payText = (order.sOdemeAdi != null && order.sOdemeAdi!.trim().isNotEmpty)
+                        ? order.sOdemeAdi!
+                        : _paymentTypeText(order.ssPaytype);
+                    // Renk ve ikon: ss_paytype'a göre (geriye dönük tutarlılık)
                     final payColor = _paymentColor(order.ssPaytype);
                     final payIcon  = _paymentIcon(order.ssPaytype);
-                    final payText  = _paymentTypeText(order.ssPaytype);
 
                     return Container(
                       decoration: BoxDecoration(

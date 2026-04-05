@@ -290,8 +290,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       
       _countdownTimer?.cancel();
       if (mounted) {
-        Navigator.pop(context);
         _showTopRightNotification('✅ Sipariş onaylandı!', isSuccess: true);
+        Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) {
@@ -328,8 +328,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     try {
       await FirebaseService.rejectOrder(widget.order.docId, widget.order.sCourier);
       if (mounted) {
-        Navigator.pop(context);
         _showTopRightNotification('🚫 Sipariş reddedildi');
+        Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) {
@@ -544,8 +544,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       await FirebaseService.updateCourierOnTheWay(widget.order.sCourier, true);
 
       if (mounted) {
-        Navigator.pop(context);
         _showTopRightNotification('✅ Sipariş teslim alındı!', isSuccess: true);
+        Navigator.pop(context);
       }
 
       // Dış servis çağrılarını UI'ı bloklamamak için arka planda çalıştır.
@@ -712,8 +712,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
 
       if (mounted) {
-        Navigator.pop(context);
         _showTopRightNotification('✅ Sipariş teslim edildi!', isSuccess: true);
+        Navigator.pop(context);
       }
 
       // Dış servis çağrılarını UI'ı bloklamamak için arka planda çalıştır.
@@ -802,11 +802,35 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
 
   /// ⭐ Teslim sonrası kurye durumunu güncelle
   /// Başka aktif siparişi varsa meşgul (2), yoksa müsait (1) yap
+  /// 
+  /// ⭐ KRİTİK GUARD: Kurye offline (s_stat=0) ise ASLA güncelleme yapma!
+  /// Bu olmadan: kurye vardiya çıkışı yapsa bile, son siparişi teslim edince
+  /// sistem onu tekrar "müsait" (s_stat=1) olarak işaretler.
   Future<void> _updateCourierStatusAfterDelivery(int courierId) async {
     try {
       print('🔄 Teslim sonrası kurye durumu kontrol ediliyor: courierId=$courierId');
-      
-      // Kuryenin başka aktif siparişi var mı kontrol et
+
+      // ⭐ 1. ÖNCE kuryenin mevcut s_stat'ını oku
+      final courierQuery = await FirebaseFirestore.instance
+          .collection('t_courier')
+          .where('s_id', isEqualTo: courierId)
+          .limit(1)
+          .get();
+
+      if (courierQuery.docs.isEmpty) {
+        print('⚠️ Kurye bulunamadı, durum güncellemesi atlandı: courierId=$courierId');
+        return;
+      }
+
+      final currentStat = (courierQuery.docs.first.data()['s_stat'] as int?) ?? 0;
+
+      // ⭐ 2. GUARD: Kurye offline (vardiya kapalı) ise ASLA yazma
+      if (currentStat == 0) {
+        print('🚫 Kurye offline (s_stat=0) — teslim sonrası durum güncellemesi ATLADIILDI (vardiya kapalı)');
+        return;
+      }
+
+      // ⭐ 3. Kuryenin başka aktif siparişi var mı kontrol et
       // Aktif sipariş: s_stat in [0, 1, 4] (0=Hazır, 1=Yolda, 4=Hazırlanıyor)
       final activeOrdersQuery = await FirebaseFirestore.instance
           .collection('t_orders')
@@ -817,12 +841,12 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       final activeOrderCount = activeOrdersQuery.docs.length;
       print('📦 Aktif sipariş sayısı: $activeOrderCount');
 
-      // Kurye durumunu belirle
+      // ⭐ 4. Kurye durumunu belirle
       final newStatus = activeOrderCount > 0 ? 2 : 1; // 2=Meşgul, 1=Müsait
-      
-      // Kurye durumunu güncelle
+
+      // ⭐ 5. Kurye durumunu güncelle
       await FirebaseService.updateCourierStatus(courierId, newStatus);
-      
+
       final statusText = newStatus == 2 ? 'Meşgul' : 'Müsait';
       print('✅ Kurye durumu güncellendi: $statusText (s_stat=$newStatus)');
     } catch (e) {
@@ -2857,11 +2881,13 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
           _buildInfoRow(
             icon: Icons.credit_card,
             label: 'Ödeme Yöntemi',
-            value: widget.order.ssPaytype == 0 
-                ? 'Nakit' 
-                : widget.order.ssPaytype == 2 
-                    ? 'Online Ödeme' 
-                    : 'Kredi Kartı',
+            value: (widget.order.sOdemeAdi?.isNotEmpty == true)
+                ? widget.order.sOdemeAdi!
+                : widget.order.ssPaytype == 0
+                    ? 'Nakit'
+                    : widget.order.ssPaytype == 2
+                        ? 'Online Ödeme'
+                        : 'Kredi Kartı',
             iconColor: widget.order.ssPaytype == 2 ? Colors.orange : Colors.blue,
           ),
           if (!shouldHideDistance) ...[

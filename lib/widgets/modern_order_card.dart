@@ -85,13 +85,15 @@ class ModernOrderCard extends StatelessWidget {
   }
 
   String _getPayTypeLabel() {
-    if (order.ssPaytype == 0) {
-      return 'Nakit';
-    } else if (order.ssPaytype == 2) {
-      return 'Online Ödeme';
-    } else {
-      return 'Kredi Kartı';
+    // 1) Ana kaynak: s_odeme_adi
+    if ((order.sOdemeAdi ?? '').isNotEmpty) {
+      return order.sOdemeAdi!;
     }
+
+    // 2) Geri uyumluluk: eski ssPaytype
+    if (order.ssPaytype == 0) return 'Nakit';
+    if (order.ssPaytype == 2) return 'Online Ödeme';
+    return 'Kredi Kartı';
   }
 
   @override

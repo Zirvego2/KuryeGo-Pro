@@ -40,6 +40,19 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
   bool _courierApprovalEnabled = false; // Kurye onay sistemi aktif mi?
   int _approvalTimeout = 120; // Varsayılan 120 saniye
 
+  /// Online (ön ödemeli) sipariş mi? → kapıda doğrulama gerekmez
+  /// "Online" kelimesi içeren tüm ödeme türleri + ssPaytype==2
+  bool _isOnlinePayment() {
+    if (widget.order.ssPaytype == 2) return true;
+    return (widget.order.sOdemeAdi ?? '').toLowerCase().contains('online');
+  }
+
+  /// Nakit ödeme mi? → Nakit/Kart tutar doğrulaması gerekir
+  bool _isCashPayment() {
+    if (widget.order.ssPaytype == 0) return true;
+    return (widget.order.sOdemeAdi ?? '').toLowerCase() == 'nakit';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -559,8 +572,8 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
         }
       }
 
-      // Online ödeme ise direkt teslim et
-      if (widget.order.ssPaytype == 2) {
+      // Online (ön ödemeli) ise direkt teslim et
+      if (_isOnlinePayment()) {
         setState(() => _isProcessing = true);
 
         try {
@@ -652,83 +665,89 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
           return;
         }
 
-        final cash = double.tryParse(_cashController.text) ?? 0;
-        final card = double.tryParse(_cardController.text) ?? 0;
-        final total = cash + card;
-
-        if (total != widget.order.ssPaycount) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text(
-                    'Toplam Ödeme ₺${widget.order.ssPaycount} olmalıdır.')),
-          );
-          return;
+        // Nakit ise tutar doğrulaması
+        double cash = 0;
+        double card = 0;
+        if (_isCashPayment()) {
+          cash = double.tryParse(_cashController.text) ?? 0;
+          card = double.tryParse(_cardController.text) ?? 0;
+          final total = cash + card;
+          if (total != widget.order.ssPaycount) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                  content: Text(
+                      'Toplam Ödeme ₺${widget.order.ssPaycount} olmalıdır.')),
+            );
+            return;
+          }
         }
 
         setState(() => _isProcessing = true);
 
         try {
-          // ⭐ Eski ödeme bilgilerini kaydet (loglama için)
-          final oldPayment = {
-            'cash': widget.order.ssPaytype == 0 ? widget.order.ssPaycount : 0.0,
-            'card': widget.order.ssPaytype == 1 ? widget.order.ssPaycount : 0.0,
-            'online': widget.order.ssPaytype == 2 ? widget.order.ssPaycount : 0.0,
-            'type': widget.order.ssPaytype,
-            'total': widget.order.ssPaycount,
-          };
-
-          // Yeni ödeme bilgileri
-          final newPayment = {
-            'cash': cash,
-            'card': card,
-            'online': 0.0,
-            'type': _paymentMethod == 'cash' ? 0 : 1,
-            'total': total,
-          };
-
-          // ⭐ Ödeme değişikliğini logla (eğer değişti ise)
-          if (oldPayment['type'] != newPayment['type'] ||
-              oldPayment['total'] != newPayment['total'] ||
-              oldPayment['cash'] != newPayment['cash'] ||
-              oldPayment['card'] != newPayment['card']) {
-            await PaymentChangeLogger.logPaymentChange(
-              orderId: widget.order.docId,
-              courierId: widget.order.sCourier,
-              orderPid: widget.order.sPid,
-              oldPayment: oldPayment,
-              newPayment: newPayment,
-            );
-          }
-
           final deliveredTime = DateTime.now();
 
-          await FirebaseService.updateOrderStatus(
-            widget.order.docId,
-            2,
-            deliveredTime: deliveredTime,
-            paymentData: {
-              's_pay.ss_paycount': _paymentMethod == 'cash' ? cash : card,
-              's_pay.ss_paycountdiv': _paymentMethod == 'cash' ? card : cash,
-              's_pay.payType': _paymentMethod == 'cash' ? 0 : 1,
-              if (widget.order.ssPaytype != 3) 's_pay.ss_paytype': _paymentMethod == 'cash' ? 0 : 1,
-            },
-          );
-
-          // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
-          await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
-
-          // ⭐ Nakit transaction kaydı oluştur (eğer nakit ödeme varsa)
-          if (cash > 0) {
-            await CourierCashTransactionService.createCashTransaction(
-              orderId: widget.order.docId,
-              orderPid: widget.order.sPid,
-              courierId: widget.order.sCourier,
-              bayId: widget.order.sBay,
-              workId: widget.order.sWork > 0 ? widget.order.sWork : null, // Restoran ID varsa kaydet
-              originalPaymentType: widget.order.ssPaytype,
-              finalPaymentType: _paymentMethod == 'cash' ? 0 : 1,
-              cashAmount: cash,
-              orderDeliveredAt: deliveredTime,
+          if (_isCashPayment()) {
+            // ── NAKİT: Tutar doğrula, logla, Firestore güncelle ──────────
+            final oldPayment = {
+              'cash': widget.order.ssPaytype == 0 ? widget.order.ssPaycount : 0.0,
+              'card': widget.order.ssPaytype == 1 ? widget.order.ssPaycount : 0.0,
+              'online': 0.0,
+              'type': widget.order.ssPaytype,
+              'total': widget.order.ssPaycount,
+            };
+            final newPayment = {
+              'cash': cash,
+              'card': card,
+              'online': 0.0,
+              'type': _paymentMethod == 'cash' ? 0 : 1,
+              'total': cash + card,
+            };
+            if (oldPayment['type'] != newPayment['type'] ||
+                oldPayment['total'] != newPayment['total'] ||
+                oldPayment['cash'] != newPayment['cash'] ||
+                oldPayment['card'] != newPayment['card']) {
+              await PaymentChangeLogger.logPaymentChange(
+                orderId: widget.order.docId,
+                courierId: widget.order.sCourier,
+                orderPid: widget.order.sPid,
+                oldPayment: oldPayment,
+                newPayment: newPayment,
+              );
+            }
+            await FirebaseService.updateOrderStatus(
+              widget.order.docId,
+              2,
+              deliveredTime: deliveredTime,
+              paymentData: {
+                's_pay.ss_paycount': _paymentMethod == 'cash' ? cash : card,
+                's_pay.ss_paycountdiv': _paymentMethod == 'cash' ? card : cash,
+                's_pay.payType': _paymentMethod == 'cash' ? 0 : 1,
+                if (widget.order.ssPaytype != 3) 's_pay.ss_paytype': _paymentMethod == 'cash' ? 0 : 1,
+              },
+            );
+            // Nakit transaction kaydı
+            if (cash > 0) {
+              await CourierCashTransactionService.createCashTransaction(
+                orderId: widget.order.docId,
+                orderPid: widget.order.sPid,
+                courierId: widget.order.sCourier,
+                bayId: widget.order.sBay,
+                workId: widget.order.sWork > 0 ? widget.order.sWork : null,
+                originalPaymentType: widget.order.ssPaytype,
+                finalPaymentType: _paymentMethod == 'cash' ? 0 : 1,
+                cashAmount: cash,
+                orderDeliveredAt: deliveredTime,
+              );
+            }
+          } else {
+            // ── DİĞER KAPIDA ÖDEME (Multinet, Sodexo, Ticket, SetCard vb.) ──
+            // Ödeme verisi değiştirilmez, sadece durum güncellenir
+            await FirebaseService.updateOrderStatus(
+              widget.order.docId,
+              2,
+              deliveredTime: deliveredTime,
+              paymentData: {},
             );
           }
 
@@ -1186,8 +1205,8 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
 
                     const SizedBox(height: 20),
 
-                    // Ödeme doğrulama (stat=1 ve kapıda ödeme ise)
-                    if (widget.order.sStat == 1 && widget.order.ssPaytype != 2)
+                    // Ödeme doğrulama (stat=1 ve online ödeme DEĞİLSE)
+                    if (widget.order.sStat == 1 && !_isOnlinePayment())
                       _buildPaymentConfirmation(),
 
                     // Restoran kartı
@@ -1285,7 +1304,103 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
   }
 
   /// Ödeme doğrulama
+  /// - Nakit: Nakit/Kart radio + tutar alanları + onay
+  /// - Diğer kapıda ödeme (Multinet, Sodexo, Ticket vb.): Ödeme adı + onay
   Widget _buildPaymentConfirmation() {
+    final payLabel = (widget.order.sOdemeAdi?.isNotEmpty == true)
+        ? widget.order.sOdemeAdi!
+        : widget.order.ssPaytype == 1
+            ? 'Kredi Kartı'
+            : 'Kapıda Ödeme';
+
+    if (_isCashPayment()) {
+      // ── NAKİT MODU ──────────────────────────────────────────────────
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Ödeme Doğrula',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Radio<String>(
+                    value: 'cash',
+                    groupValue: _paymentMethod,
+                    onChanged: (value) {
+                      setState(() {
+                        _paymentMethod = value!;
+                        final total = (double.tryParse(_cashController.text) ?? 0) +
+                            (double.tryParse(_cardController.text) ?? 0);
+                        _cashController.text = total.toString();
+                        _cardController.text = '0';
+                      });
+                    },
+                  ),
+                  const Text('Nakit'),
+                  const SizedBox(width: 20),
+                  Radio<String>(
+                    value: 'card',
+                    groupValue: _paymentMethod,
+                    onChanged: (value) {
+                      setState(() {
+                        _paymentMethod = value!;
+                        final total = (double.tryParse(_cashController.text) ?? 0) +
+                            (double.tryParse(_cardController.text) ?? 0);
+                        _cardController.text = total.toString();
+                        _cashController.text = '0';
+                      });
+                    },
+                  ),
+                  const Text('Kart'),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _cashController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Nakit',
+                        prefixIcon: Icon(Icons.money),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _cardController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Kart',
+                        prefixIcon: Icon(Icons.credit_card),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              CheckboxListTile(
+                value: _paymentConfirmed,
+                onChanged: (value) => setState(() => _paymentConfirmed = value!),
+                title: const Text('Ödemeyi Doğruluyorum'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // ── DİĞER KAPIDA ÖDEME MODU (Multinet, Sodexo, Ticket, SetCard vb.) ──
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1296,77 +1411,54 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
               'Ödeme Doğrula',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Radio<String>(
-                  value: 'cash',
-                  groupValue: _paymentMethod,
-                  onChanged: (value) {
-                    setState(() {
-                      _paymentMethod = value!;
-                      if (value == 'cash') {
-                        final total = (double.tryParse(_cashController.text) ?? 0) +
-                            (double.tryParse(_cardController.text) ?? 0);
-                        _cashController.text = total.toString();
-                        _cardController.text = '0';
-                      }
-                    });
-                  },
-                ),
-                const Text('Nakit'),
-                const SizedBox(width: 20),
-                Radio<String>(
-                  value: 'card',
-                  groupValue: _paymentMethod,
-                  onChanged: (value) {
-                    setState(() {
-                      _paymentMethod = value!;
-                      if (value == 'card') {
-                        final total = (double.tryParse(_cashController.text) ?? 0) +
-                            (double.tryParse(_cardController.text) ?? 0);
-                        _cardController.text = total.toString();
-                        _cashController.text = '0';
-                      }
-                    });
-                  },
-                ),
-                const Text('Kart'),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _cashController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Nakit',
-                      prefixIcon: Icon(Icons.money),
-                      border: OutlineInputBorder(),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF3F4F6),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFE5E7EB)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.payment, color: Color(0xFF2563EB), size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Ödeme Türü',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF6B7280)),
+                        ),
+                        Text(
+                          payLabel,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF111827),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(
-                    controller: _cardController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Kart',
-                      prefixIcon: Icon(Icons.credit_card),
-                      border: OutlineInputBorder(),
+                  Text(
+                    '₺${widget.order.ssPaycount.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF16A34A),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             CheckboxListTile(
               value: _paymentConfirmed,
               onChanged: (value) => setState(() => _paymentConfirmed = value!),
-              title: const Text('Ödemeyi Doğruluyorum'),
+              title: Text('$payLabel ödemesini müşteriden aldım'),
               controlAffinity: ListTileControlAffinity.leading,
             ),
           ],
@@ -1677,11 +1769,13 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
   }
 
   Widget _buildDeliveryButton() {
-    final paymentTypeText = widget.order.ssPaytype == 0
-        ? 'Kapıda Nakit'
-        : widget.order.ssPaytype == 1
-            ? 'Kapıda Kredi'
-            : 'Online Ödeme';
+    final paymentTypeText = (widget.order.sOdemeAdi?.isNotEmpty == true)
+        ? widget.order.sOdemeAdi!
+        : widget.order.ssPaytype == 0
+            ? 'Kapıda Nakit'
+            : widget.order.ssPaytype == 1
+                ? 'Kapıda Kredi'
+                : 'Online Ödeme';
 
     final buttonText = widget.order.sStat == 0 ? 'TESLİM AL' : 'TESLİM ET';
 

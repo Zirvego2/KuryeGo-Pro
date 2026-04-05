@@ -513,17 +513,21 @@ class FirebaseService {
         .snapshots()
         .map((snapshot) {
       if (snapshot.docs.isEmpty) {
-        print('⚠️ Kurye bulunamadı: $courierId');
-        return 1; // Default: Müsait
+        // ⭐ KRİTİK DÜZELTMESİ: Kurye bulunamazsa OFFLINE (0) döndür
+        // Eski kod "return 1" yapıyordu → ağ sorunu / tip uyuşmazlığında
+        // kurye yanlışlıkla "müsait" görünüyordu!
+        print('⚠️ Kurye bulunamadı (watchCourierStatus): $courierId → 0 (OFFLINE) döndürülüyor');
+        return 0; // Güvenli default: OFFLINE
       }
       
       final courierData = snapshot.docs.first.data();
-      final status = courierData['s_stat'] ?? 1;
+      // ⭐ KRİTİK DÜZELTMESİ: s_stat null ise OFFLINE (0) döndür (eskiden 1 döndürüyordu)
+      final status = courierData['s_stat'] ?? 0;
       print('👤 Kurye statüsü: $status');
       return status as int;
     }).handleError((error) {
       print('❌ Kurye statü dinleme hatası: $error');
-      return 1; // Default: Müsait
+      return 0; // Güvenli default: OFFLINE (eskiden 1 → "müsait" döndürüyordu)
     });
   }
 

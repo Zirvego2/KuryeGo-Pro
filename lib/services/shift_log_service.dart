@@ -105,7 +105,21 @@ class ShiftLogService {
       }
 
       // ⭐ 6. Log başarıyla oluşturulduktan sonra s_stat'ı güncelle
+      // ⭐ KRİTİK RACE CONDITION KORUMASI: s_stat'ı güncellemeden önce
+      // Firestore'dan GÜNCEL değeri oku ve hala 0 (OFFLINE) olduğundan emin ol.
+      // Bu, endShift() ve startShift() arasındaki race condition'ı önler.
       try {
+        final freshCourierDoc = await courierDocRef.get();
+        final freshStat = freshCourierDoc.data()?['s_stat'] as int? ?? 0;
+        if (freshStat != 0 && freshStat != 1) {
+          // Kurye farklı bir durumda (örn: başka bir startShift tamamladı)
+          print('⚠️ Race condition algılandı: s_stat zaten $freshStat - yeni log siliniyor');
+          await docRef.delete();
+          return {
+            'success': false,
+            'message': '⚠️ Vardiya zaten açık veya başka bir işlem devam ediyor!',
+          };
+        }
         await courierDocRef.update({
           's_stat': 1, // AVAILABLE - Vardiya açık
         });
@@ -494,11 +508,22 @@ class ShiftLogService {
         return foundLog;
       }
       
-      // ⭐ s_stat = 1 ama log bulunamadı - bu bir tutarsızlık
-      // Vardiya başlatma işlemi tamamlanmamış olabilir
-      print('⚠️ ⚠️ ⚠️ UYARI: s_stat=$courierStatus (vardiya açık) ama log bulunamadı!');
-      print('   Bu durum vardiya başlatma sırasında oluşmuş olabilir.');
-      print('   Log henüz oluşturulmamış olabilir veya bir hata oluşmuş olabilir.');
+      // ⭐ s_stat = 1 ama log bulunamadı - KRİTİK TUTARSIZLIK (inconsistency)
+      // Bu durum: startShift() kısmi başarısızlığı, eski veri, veya race condition
+      // ⭐ OTOMATİK ONARIM: s_stat'ı 0 (OFFLINE) yaparak tutarsızlığı düzelt
+      print('⚠️ ⚠️ ⚠️ KRİTİK TUTARSIZLIK: s_stat=$courierStatus (vardiya açık) ama log bulunamadı!');
+      print('   🛠️ OTOMATİK ONARIM: s_stat=0 (OFFLINE) yapılıyor...');
+      try {
+        await courierQuery.docs.first.reference.update({
+          's_stat': 0, // OFFLINE - tutarsızlık düzeltildi
+          's_stat_updated': FieldValue.serverTimestamp(),
+        });
+        // 💾 Cache'i invalidate et
+        LocationService.invalidateStatusCache();
+        print('✅ ✅ ✅ OTOMATİK ONARIM TAMAMLANDI: s_stat=0 (OFFLINE) yazıldı');
+      } catch (repairError) {
+        print('❌ Otomatik onarım hatası: $repairError');
+      }
       
       return null;
     } catch (e) {
@@ -515,58 +540,44 @@ class ShiftLogService {
   /// 
   /// ⭐ NOT: Bu stream sadece log değişikliklerini dinler, asıl durum kontrolü s_stat'tan yapılır.
   Stream<CourierDailyLog?> watchActiveShift(int courierId) {
-    // ⭐ KRİTİK DÜZELTME: shiftDate filtresini kaldır, sadece isClosed=false ve courierId ile filtrele
-    // En son oluşturulan aktif vardiyayı al (gece vardiyası veya normal vardiya fark etmez)
-    // ⭐ NOT: shiftDate filtresi kaldırıldı çünkü gece vardiyası durumunda vardiya dün başlamış olabilir
-    // ama bugün devam ediyor olabilir. Bu yüzden sadece isClosed=false kontrolü yeterli.
-    // ⭐ NOT: orderBy kullanmıyoruz çünkü Firestore index gerektirebilir, bunun yerine
-    // tüm aktif vardiyaları alıp client-side'da en son olanı seçiyoruz
-    // ⭐ ÖNCE s_stat kontrolü yap, sonra log'u döndür
+    // ⭐ KRİTİK DÜZELTİLDİ: Artık t_courier DEĞİL, direkt t_shift_logs dinleniyor.
+    //
+    // ESKİ YAKLAŞIM (BUG): t_courier snapshot dinleniyordu.
+    //   - Konum servisi t_courier'ı her 10-15 sn güncellediğinde bu stream tetikleniyordu.
+    //   - asyncMap içindeki t_shift_logs GET sorgusu kısa süreliğine boş dönebiliyordu.
+    //   - Bu, _activeLog = null → UI "kapandı" → getActiveShift tekrar çağrı döngüsü yaratıyordu.
+    //   - Sonuç: Uygulama her konum güncellemesinde "kapanıp açılıyor" görünüyordu.
+    //
+    // YENİ YAKLAŞIM (FIX): t_shift_logs direkt dinleniyor.
+    //   - Sadece gerçek vardiya değişikliği (başlat/bitir/mola) stream'i tetikler.
+    //   - Konum güncellemeleri artık bu stream'i tetiklemez → stabil UI.
+    //   - isClosed=true yapılınca stream null döner → UI "vardiya kapalı" gösterir.
     return _db
-        .collection('t_courier')
-        .where('s_id', isEqualTo: courierId)
+        .collection(_collectionName)
+        .where('courierId', isEqualTo: courierId)
+        .where('isClosed', isEqualTo: false)
         .snapshots()
-        .asyncMap((courierSnapshot) async {
-      // ⭐ s_stat kontrolü
-      if (courierSnapshot.docs.isEmpty) {
-        return null;
-      }
-
-      final courierData = courierSnapshot.docs.first.data();
-      final courierStatus = courierData['s_stat'] as int? ?? 0;
-      
-      // ⭐ Eğer s_stat = 0 ise, vardiya kapalı demektir
-      if (courierStatus == 0) {
-        return null;
-      }
-
-      // ⭐ s_stat != 0 ise vardiya açık, log'u bul ve döndür
-      final logSnapshot = await _db
-          .collection(_collectionName)
-          .where('courierId', isEqualTo: courierId)
-          .where('isClosed', isEqualTo: false)
-          .get();
-
+        .map((logSnapshot) {
       if (logSnapshot.docs.isEmpty) {
-        // Log henüz oluşturulmamış olabilir (vardiya yeni başlatılmış)
+        // Açık vardiya log'u yok → vardiya kapalı
         return null;
       }
 
-      // En son başlatılan log'u bul
+      // En son başlatılan aktif log'u bul
       CourierDailyLog? latestLog;
       DateTime? latestStartAt;
-      
+
       for (var doc in logSnapshot.docs) {
         final log = CourierDailyLog.fromFirestore(doc);
         if (!log.isClosed) {
-          if (latestLog == null || 
+          if (latestLog == null ||
               (log.shiftStartAt.isAfter(latestStartAt ?? DateTime(1970)))) {
             latestLog = log;
             latestStartAt = log.shiftStartAt;
           }
         }
       }
-      
+
       return latestLog;
     });
   }

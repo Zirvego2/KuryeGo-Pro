@@ -274,12 +274,28 @@ class LocationService {
       }
 
       // 💾 CACHE KONTROLÜ: Son kontrol 30 dakikadan eskiyse güncelle
+      // ⭐ KRİTİK: Background isolate için SharedPreferences üzerinden invalidate sinyali kontrol et
       final now = DateTime.now();
+      
+      // Main isolate'ten gelen invalidate sinyalini kontrol et
+      bool externalInvalidated = false;
+      final invalidatedAt = prefs.getInt('status_cache_invalidated_at');
+      if (invalidatedAt != null && _lastStatusCheck != null) {
+        final invalidatedTime = DateTime.fromMillisecondsSinceEpoch(invalidatedAt);
+        if (invalidatedTime.isAfter(_lastStatusCheck!)) {
+          print('🔄 External invalidate sinyali algılandı! Background cache temizleniyor...');
+          _cachedCourierStatus = null;
+          _lastStatusCheck = null;
+          externalInvalidated = true;
+        }
+      }
+      
       final shouldRefreshCache = _lastStatusCheck == null || 
-                                 now.difference(_lastStatusCheck!) > _statusCacheDuration;
+                                 now.difference(_lastStatusCheck!) > _statusCacheDuration ||
+                                 externalInvalidated;
 
       if (shouldRefreshCache) {
-        print('🔄 Cache yenileniyor (30 dakika geçti)...');
+        print('🔄 Cache yenileniyor...');
         
         // Firestore'dan kurye durumunu al
         final courierDoc = await FirebaseFirestore.instance
@@ -290,19 +306,21 @@ class LocationService {
 
         if (courierDoc.docs.isEmpty) {
           print('⚠️ Kurye bulunamadı, varsayılan interval kullanılacak');
-          _cachedCourierStatus = 1; // Varsayılan durum
+          // ⭐ KRİTİK DÜZELTMESİ: Kurye bulunamazsa OFFLINE (0) varsay (eskiden 1 idi)
+          _cachedCourierStatus = 0; // Güvenli default: OFFLINE
           _lastStatusCheck = now;
-          return true; // Her 10 saniyede bir (her tick)
+          return false; // Kurye yoksa konum gönderme
         }
 
-        _cachedCourierStatus = courierDoc.docs.first.data()['s_stat'] ?? 1;
+        // ⭐ KRİTİK DÜZELTMESİ: s_stat null ise OFFLINE (0) varsay (eskiden 1 idi)
+        _cachedCourierStatus = courierDoc.docs.first.data()['s_stat'] ?? 0;
         _lastStatusCheck = now;
         print('💾 Durum cache\'lendi: $_cachedCourierStatus');
       } else {
         print('💾 Cache kullanılıyor (${now.difference(_lastStatusCheck!).inSeconds} sn önce güncellendi)');
       }
 
-      final courierStatus = _cachedCourierStatus ?? 1;
+      final courierStatus = _cachedCourierStatus ?? 0; // Güvenli default: OFFLINE
       
       // ⭐ Duruma göre interval belirleme
       // tickCount * 15 saniye = toplam geçen süre
@@ -859,13 +877,24 @@ class LocationService {
   }
 
   /// 💾 Cache'i invalidate et (kurye durumu değiştiğinde çağrılmalı)
-  /// Örnek: shift_service'te durum değiştiğinde bu metod çağrılabilir
+  /// ⭐ KRİTİK: Hem main isolate hem de background isolate'in cache'ini temizler.
+  /// Main isolate → static değişkenleri sıfırla
+  /// Background isolate → SharedPreferences üzerinden "invalidate" sinyali gönder
   static void invalidateStatusCache() {
-    print('🔄 Status cache invalidate edildi');
+    print('🔄 Status cache invalidate edildi (main isolate)');
     _cachedCourierStatus = null;
     _lastStatusCheck = null;
     // Not: _lastSentLatitude ve _lastSentLongitude temizlenmez (konum cache'i)
     // Not: _lastBackendCheck temizlenmez (backend kontrol cache'i)
+    
+    // ⭐ Background isolate'e invalidate sinyali gönder (SharedPreferences üzerinden)
+    // Background isolate bu flag'i okuyunca cache'ini temizleyecek
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setInt('status_cache_invalidated_at', DateTime.now().millisecondsSinceEpoch);
+      print('🔄 Background isolate cache invalidate sinyali gönderildi (SharedPreferences)');
+    }).catchError((e) {
+      print('⚠️ Cache invalidate sinyal hatası: $e');
+    });
   }
 }
 

@@ -34,6 +34,9 @@ class OrderModel {
   // Ödeme bilgileri
   final int ssPaytype; // 0=Nakit, 1=Kart, 2=Online
   final double ssPaycount;
+  // Yeni ödeme alanları
+  final int? sOdemeId;     // 4-31
+  final String? sOdemeAdi; // "Nakit", "Multinet" vb.
 
   // Mesafe
   final String sDinstance;
@@ -47,6 +50,10 @@ class OrderModel {
   // JaviPos API için
   final String? clientId; // ClientId (UserId için)
   final String? javiPosid; // JaviPosid (Id için)
+  
+  // Yeni nesil ödeme alanları (paymentMethodOriginal)
+  final int? paymentMethodId;     // paymentMethodOriginal.id
+  final String? paymentMethodText; // paymentMethodOriginal.text
 
   OrderModel({
     required this.docId,
@@ -75,6 +82,8 @@ class OrderModel {
     this.ssLocationWork,
     required this.ssPaytype,
     required this.ssPaycount,
+    this.sOdemeId,
+    this.sOdemeAdi,
     required this.sDinstance,
     this.sCourierAccepted,
     this.sCourierResponseTime,
@@ -82,6 +91,8 @@ class OrderModel {
     this.sRejectedAt,
     this.clientId,
     this.javiPosid,
+    this.paymentMethodId,
+    this.paymentMethodText,
   });
 
   /// GeoPoint'i Map'e çevir
@@ -146,6 +157,8 @@ class OrderModel {
       ssLocationWork: _parseGeoPoint(data['ss_locationWork']),
       ssPaytype: data['s_pay']?['ss_paytype'] ?? data['ss_paytype'] ?? 0,
       ssPaycount: (data['s_pay']?['ss_paycount'] ?? data['ss_paycount'] ?? 0).toDouble(),
+      sOdemeId: data['s_odeme_id'] is int ? data['s_odeme_id'] : int.tryParse('${data['s_odeme_id'] ?? ''}'),
+      sOdemeAdi: data['s_odeme_adi']?.toString(),
       sDinstance: data['s_dinstance']?.toString() ?? '0',
       sCourierAccepted: data['s_courier_accepted'],
       sCourierResponseTime: data['s_courier_response_time'] != null
@@ -159,6 +172,12 @@ class OrderModel {
           : null,
       clientId: data['ClientId']?.toString(),
       javiPosid: data['JaviPosid']?.toString(),
+      paymentMethodId: data['paymentMethodOriginal'] == null
+          ? null
+          : (data['paymentMethodOriginal']['id'] is int
+              ? (data['paymentMethodOriginal']['id'] as int)
+              : int.tryParse(data['paymentMethodOriginal']['id']?.toString() ?? '')),
+      paymentMethodText: data['paymentMethodOriginal']?['text']?.toString(),
     );
   }
 }
