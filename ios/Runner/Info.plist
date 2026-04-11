@@ -43,6 +43,8 @@
 	<string>Teslimat adresine gidebilmeniz için uygulama açıkken konumunuza ihtiyaç duyuyoruz.</string>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>Yeni siparişler ve teslimat güncellemeleri için bildirim iznine ihtiyaç duyarız.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Profil fotoğrafınızı seçmek için galeri erişimi gerekir.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

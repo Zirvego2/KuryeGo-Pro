@@ -34,10 +34,10 @@ class MainActivity : FlutterActivity() {
         try {
             val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle("ZirveGo Kurye Güncelleme")
-                .setDescription("Uygulama güncelleniyor...")
+                .setTitle("ZirveGo Kurye")
+                .setDescription("APK dosyası indiriliyor…")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "zirvego_update.apk")
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "zirvego.apk")
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(true)
             

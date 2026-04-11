@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
-import 'package:intl/date_symbol_data_local.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../utils/business_day_bounds.dart';
 
 /// 📊 İstatistikler & Performans Ekranı
 class StatisticsScreen extends StatefulWidget {
@@ -34,7 +35,6 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   @override
   void initState() {
     super.initState();
-    initializeDateFormatting('tr', null); // Türkçe locale'i initialize et
     _loadStatistics();
   }
 
@@ -44,8 +44,13 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
 
     try {
       final now = DateTime.now();
-      final todayStart = DateTime(now.year, now.month, now.day);
-      final weekStart = todayStart.subtract(Duration(days: now.weekday - 1));
+      final prefs = await SharedPreferences.getInstance();
+      final resetHour = prefs.getInt('daily_reset_hour') ?? 0;
+      final dayBounds = getBusinessDayBounds(now, resetHour);
+
+      final calendarTodayStart = DateTime(now.year, now.month, now.day);
+      final weekStart = calendarTodayStart.subtract(Duration(days: now.weekday - 1));
+      final weekEnd = weekStart.add(const Duration(days: 7));
       final monthStart = DateTime(now.year, now.month, 1);
 
       // ⭐ TESLİM TARİHİNE GÖRE (s_ddate) - DOĞRU!
@@ -64,12 +69,13 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       
       _weeklyDeliveries = monthQuery.docs.where((doc) {
         final ddate = (doc.data()['s_ddate'] as Timestamp?)?.toDate();
-        return ddate != null && ddate.isAfter(weekStart);
+        return isDateTimeInRange(ddate, weekStart, weekEnd);
       }).length;
       
+      // Profil kartı ile aynı: günlük sıfırlama saati + [start, end)
       _todayDeliveries = monthQuery.docs.where((doc) {
         final ddate = (doc.data()['s_ddate'] as Timestamp?)?.toDate();
-        return ddate != null && ddate.isAfter(todayStart);
+        return isDateTimeInRange(ddate, dayBounds.start, dayBounds.end);
       }).length;
       
       print('   📅 Bugün teslim: $_todayDeliveries');
@@ -79,12 +85,12 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       // Son 7 günün günlük verilerini hesapla (s_ddate ile)
       _dailyData = List.filled(7, 0);
       for (int i = 0; i < 7; i++) {
-        final dayStart = todayStart.subtract(Duration(days: 6 - i));
+        final dayStart = calendarTodayStart.subtract(Duration(days: 6 - i));
         final dayEnd = dayStart.add(const Duration(days: 1));
         
         final dayCount = monthQuery.docs.where((doc) {
           final ddate = (doc.data()['s_ddate'] as Timestamp?)?.toDate();
-          return ddate != null && ddate.isAfter(dayStart) && ddate.isBefore(dayEnd);
+          return isDateTimeInRange(ddate, dayStart, dayEnd);
         }).length;
         
         _dailyData[i] = dayCount;
@@ -93,7 +99,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       // Ortalama teslimat süresini hesapla (haftalık)
       final weekDocs = monthQuery.docs.where((doc) {
         final ddate = (doc.data()['s_ddate'] as Timestamp?)?.toDate();
-        return ddate != null && ddate.isAfter(weekStart);
+        return isDateTimeInRange(ddate, weekStart, weekEnd);
       }).toList();
       
       if (weekDocs.isNotEmpty) {
@@ -136,24 +142,24 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
               onRefresh: _loadStatistics,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Periyot seçimi
                     _buildPeriodSelector(),
                     
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 10),
                     
                     // Özet kartlar
                     _buildSummaryCards(),
                     
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 12),
                     
                     // Grafik
                     _buildChart(),
                     
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 12),
                     
                     // Performans metrikleri
                     _buildPerformanceMetrics(),
@@ -169,9 +175,9 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     return Row(
       children: [
         Expanded(child: _periodButton('Günlük', 'daily')),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         Expanded(child: _periodButton('Haftalık', 'weekly')),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         Expanded(child: _periodButton('Aylık', 'monthly')),
       ],
     );
@@ -182,16 +188,16 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     return GestureDetector(
       onTap: () => setState(() => _selectedPeriod = value),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(vertical: 8),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFF2196F3) : Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           boxShadow: isSelected
               ? [
                   BoxShadow(
-                    color: const Color(0xFF2196F3).withOpacity(0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                    color: const Color(0xFF2196F3).withOpacity(0.25),
+                    blurRadius: 6,
+                    offset: const Offset(0, 1),
                   ),
                 ]
               : null,
@@ -202,7 +208,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           style: TextStyle(
             color: isSelected ? Colors.white : Colors.black87,
             fontWeight: FontWeight.bold,
-            fontSize: 14,
+            fontSize: 12,
           ),
         ),
       ),
@@ -243,7 +249,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
             color: const Color(0xFF4CAF50),
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 8),
         Expanded(
           child: _summaryCard(
             icon: Icons.timer,
@@ -265,15 +271,15 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     required Color color,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
+            blurRadius: 6,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
@@ -283,19 +289,19 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
                   color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(6),
                 ),
-                child: Icon(icon, color: color, size: 20),
+                child: Icon(icon, color: color, size: 17),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   title,
                   style: const TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     color: Colors.black54,
                     fontWeight: FontWeight.w500,
                   ),
@@ -303,20 +309,20 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Text(
             value,
             style: TextStyle(
-              fontSize: 24,
+              fontSize: 20,
               fontWeight: FontWeight.bold,
               color: color,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 2),
           Text(
             subtitle,
             style: const TextStyle(
-              fontSize: 11,
+              fontSize: 10,
               color: Colors.black45,
             ),
           ),
@@ -328,15 +334,15 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   /// Grafik
   Widget _buildChart() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
+            blurRadius: 6,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
@@ -346,14 +352,14 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           const Text(
             '📊 Son 7 Gün',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: FontWeight.bold,
               color: Colors.black87,
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 10),
           SizedBox(
-            height: 200,
+            height: 150,
             child: BarChart(
               BarChartData(
                 alignment: BarChartAlignment.spaceAround,
@@ -372,11 +378,11 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                         final day = DateFormat('E', 'tr').format(date).substring(0, 2);
                         
                         return Padding(
-                          padding: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.only(top: 4),
                           child: Text(
                             day,
                             style: const TextStyle(
-                              fontSize: 10,
+                              fontSize: 9,
                               fontWeight: FontWeight.bold,
                               color: Colors.black54,
                             ),
@@ -388,12 +394,12 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                   leftTitles: AxisTitles(
                     sideTitles: SideTitles(
                       showTitles: true,
-                      reservedSize: 30,
+                      reservedSize: 22,
                       getTitlesWidget: (value, meta) {
                         return Text(
                           value.toInt().toString(),
                           style: const TextStyle(
-                            fontSize: 10,
+                            fontSize: 9,
                             color: Colors.black54,
                           ),
                         );
@@ -403,18 +409,18 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                   topTitles: AxisTitles(
                     sideTitles: SideTitles(
                       showTitles: true,
-                      reservedSize: 30,
+                      reservedSize: 22,
                       getTitlesWidget: (value, meta) {
                         final index = value.toInt();
                         if (index < 0 || index >= 7) return const Text('');
                         final count = _dailyData[index];
                         if (count == 0) return const Text(''); // 0 ise gösterme
                         return Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
+                          padding: const EdgeInsets.only(bottom: 2),
                           child: Text(
                             '$count',
                             style: const TextStyle(
-                              fontSize: 12,
+                              fontSize: 10,
                               fontWeight: FontWeight.bold,
                               color: Color(0xFF2196F3),
                             ),
@@ -444,8 +450,8 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                       BarChartRodData(
                         toY: _dailyData[index].toDouble(),
                         color: const Color(0xFF2196F3),
-                        width: 16,
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                        width: 12,
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
                       ),
                     ],
                   ),
@@ -461,15 +467,15 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   /// Performans metrikleri
   Widget _buildPerformanceMetrics() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
+            blurRadius: 6,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
@@ -479,18 +485,18 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
           const Text(
             '⚡ Performans Metrikleri',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: FontWeight.bold,
               color: Colors.black87,
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
           _metricRow('Ortalama Teslimat Süresi', '${_avgDeliveryTime.toStringAsFixed(0)} dakika', Icons.timer),
-          const Divider(height: 24),
+          const Divider(height: 18),
           _metricRow('Bugünkü Teslimatlar', '$_todayDeliveries sipariş', Icons.today),
-          const Divider(height: 24),
+          const Divider(height: 18),
           _metricRow('Haftalık Teslimatlar', '$_weeklyDeliveries sipariş', Icons.calendar_today),
-          const Divider(height: 24),
+          const Divider(height: 18),
           _metricRow('Aylık Teslimatlar', '$_monthlyDeliveries sipariş', Icons.calendar_month),
         ],
       ),
@@ -501,19 +507,19 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     return Row(
       children: [
         Container(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
             color: const Color(0xFF2196F3).withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(6),
           ),
-          child: Icon(icon, color: const Color(0xFF2196F3), size: 20),
+          child: Icon(icon, color: const Color(0xFF2196F3), size: 17),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 8),
         Expanded(
           child: Text(
             label,
             style: const TextStyle(
-              fontSize: 14,
+              fontSize: 12,
               color: Colors.black87,
             ),
           ),
@@ -521,7 +527,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         Text(
           value,
           style: const TextStyle(
-            fontSize: 14,
+            fontSize: 12,
             fontWeight: FontWeight.bold,
             color: Color(0xFF2196F3),
           ),

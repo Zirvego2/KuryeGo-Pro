@@ -16,6 +16,7 @@ import '../services/shift_log_service.dart';
 import '../services/break_service.dart';
 import '../services/route_service.dart';
 import '../services/pool_order_service.dart';
+import '../services/notification_service.dart';
 import '../models/order_model.dart';
 import '../widgets/modern_order_detail_sheet.dart';
 import '../widgets/modern_header.dart';
@@ -28,6 +29,7 @@ import '../main.dart';
 import 'login_screen.dart';
 import 'main_profile_screen.dart';
 import 'pool_orders_screen.dart';
+import '../utils/initial_media_permissions.dart';
 
 /// Ana Harita Ekranı
 /// React Native Page_Home.js karşılığı
@@ -54,8 +56,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String _userName = '';
   int _packageCount = 0;
   int _todayDeliveredCount = 0; // Bugün teslim edilen paket sayısı
-  String _statusText = 'MÜSAİT';
-  int _courierStatus = 1; // 0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza
+  String _statusText = '';
+  int _courierStatus = 0; // 0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza
   bool _isOnTheWay = false; // t_courier.s_on_the_way
   int _bayId = 1; // Bay/Şube ID (varsayılan)
   bool _poolPermissionEnabled = false;
@@ -63,6 +65,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String _poolBusinessScope = 'selected';
   List<int> _poolBusinessIds = [];
   bool _externalOrderEntryEnabled = false;
+  int _poolOrderCount = 0;       // Havuzdaki anlık sipariş sayısı (badge)
+  int _prevPoolOrderCount = -1;  // İlk emit'te bildirim çıkmaması için -1
+  StreamSubscription<List<OrderModel>>? _poolCountSubscription;
   
   // ⏰ Foreground location timer (debug/development için)
   Timer? _foregroundLocationTimer;
@@ -76,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Set<String> _previousOrderIds = {}; // ⭐ Önceki stream emit'teki sipariş ID'leri (değişiklik tespiti için)
   bool _isFirstLoad = true; // İlk yükleme mi? (mevcut siparişler için bildirim gösterilmesin)
   final AudioPlayer _notificationAudioPlayer = AudioPlayer(); // ⭐ Bildirim sesi için
+  final AudioPlayer _poolNotificationAudioPlayer = AudioPlayer(); // Havuz bildirim sesi
 
   // 🗺️ Rota yönetimi
   RouteResult? _currentRoute; // Mevcut rota
@@ -91,9 +97,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final Map<int, Map<String, dynamic>> _restaurants = {}; // Restoran bilgileri cache (restoran ID -> {s_id, s_name, s_loc})
   final Map<int, int> _restaurantOrderCounts = {}; // Restoran ID -> Sipariş sayısı
   final Map<String, BitmapDescriptor> _restaurantMarkerIcons = {}; // Restoran marker icon cache (renk_sayı -> icon)
+  bool _showRestaurantMarkers = true; // Web panel genel ayarlardan kontrol edilir
   StreamSubscription<QuerySnapshot>? _restaurantOrdersSubscription; // Kuryeye atanmamış siparişler stream'i
   StreamSubscription? _ordersSubscription; // ⭐ Sipariş stream subscription
   StreamSubscription<bool>? _courierOnTheWaySubscription;
+
+  /// Çift dokunuşla üst üste sipariş detay bottom sheet açılmasını önler
+  bool _orderDetailSheetOpen = false;
 
   @override
   void initState() {
@@ -169,21 +179,48 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     if (_poolPermissionEnabled)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 5),
-                        child: ElevatedButton.icon(
-                          onPressed: _openPoolScreen,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white,
-                            foregroundColor: const Color(0xFF1D4ED8),
-                            elevation: 0,
-                            side: const BorderSide(color: Color(0xFF1D4ED8)),
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
-                          ),
-                          icon: const Icon(Icons.inventory_2_outlined, size: 16),
-                            label: const Text(
-                              'Havuz',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: _openPoolScreen,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: const Color(0xFF1D4ED8),
+                                elevation: 0,
+                                side: const BorderSide(color: Color(0xFF1D4ED8)),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                              ),
+                              icon: const Icon(Icons.inventory_2_outlined, size: 16),
+                              label: const Text(
+                                'Havuz',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                              ),
                             ),
+                            if (_poolOrderCount > 0)
+                              Positioned(
+                                top: -5,
+                                right: -5,
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.red,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                                  child: Text(
+                                    '$_poolOrderCount',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     if (_externalOrderEntryEnabled)
@@ -218,9 +255,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _foregroundLocationTimer?.cancel();
     _notificationAudioPlayer.dispose(); // ⭐ Audio player'ı temizle
+    _poolNotificationAudioPlayer.dispose(); // Havuz audio player'ı temizle
     _restaurantOrdersSubscription?.cancel(); // ⭐ Restoran sipariş stream'ini iptal et
     _ordersSubscription?.cancel(); // ⭐ Sipariş stream'ini iptal et
     _courierOnTheWaySubscription?.cancel();
+    _poolCountSubscription?.cancel(); // Havuz sayım stream'ini iptal et
     
     // ⭐ Uygulama kapatılıyor flag'ini set et
     _setAppRunningFlag(false); // Uygulama kapandı
@@ -287,6 +326,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     // ⭐ Kullanıcı bilgilerini yükle
     await _loadUserData();
     
+    // ⭐ Restoran marker gösterim ayarını yükle
+    await _loadRestaurantSettings();
+
     // ⭐ Restoran verilerini yükle
     await _loadRestaurants();
 
@@ -329,7 +371,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 _statusText = 'KAZA';
                 break;
               default:
-                _statusText = 'MÜSAİT';
+                _statusText = 'ÇALIŞMIYOR';
             }
             // ⭐ Vardiya çıkış bildirimi kaldırıldı - shiftTimeExpired artık yok
           });
@@ -367,6 +409,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
 
     setState(() => _isLoading = false);
+
+    // İlk girişte galeri/foto izni (sistem diyaloğu; versiyon uyarısından sonra)
+    unawaited(_scheduleInitialMediaPermissionsAfterUi());
+  }
+
+  Future<void> _scheduleInitialMediaPermissionsAfterUi() async {
+    await Future<void>.delayed(const Duration(milliseconds: 3500));
+    if (!mounted) return;
+    await requestInitialMediaPermissionsIfNeeded();
   }
 
   /// ⭐ Sipariş güncellemelerini işle (async)
@@ -569,12 +620,69 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               .toList();
           _externalOrderEntryEnabled = externalOrderEnabled;
         });
+        // Background service için havuz config'i SharedPreferences'a kaydet
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('pool_bay_id', _bayId);
+        await prefs.setBool('pool_enabled', _poolPermissionEnabled);
+        await prefs.setString('pool_scope', _poolBusinessScope);
+        await prefs.setString(
+          'pool_business_ids',
+          _poolBusinessIds.join(','),
+        );
+        // Havuz izni varsa sayım stream'ini başlat
+        if (_poolPermissionEnabled) _startPoolCountStream();
       } catch (e) {
         print('❌ Havuz yetki bilgisi alınamadı: $e');
       }
     }
     
     print('👤 Kullanıcı bilgileri yüklendi: $_userName (Bay: $_bayId)');
+  }
+
+  /// Yeni havuz siparişi geldiğinde in-app SnackBar göster
+  /// Sistem bildirimi arka plan servisten gelir — çift bildirim olmaması için buradan gönderilmiyor
+  Future<void> _showPoolLocalNotification(int count) async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.inventory_2_outlined, color: Colors.white, size: 18),
+              const SizedBox(width: 8),
+              Text('📦 Havuzda $count sipariş var',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
+  }
+
+  /// Havuz sipariş sayımı stream'ini başlat (badge + bildirim)
+  void _startPoolCountStream() {
+    _poolCountSubscription?.cancel();
+    _prevPoolOrderCount = -1; // ilk emit bildirim tetiklemesin
+    _poolCountSubscription = PoolOrderService.watchPoolOrders(
+      bayId: _bayId,
+      scope: _poolBusinessScope,
+      allowedBusinessIds: _poolBusinessIds,
+    ).listen((orders) {
+      final newCount = orders.length;
+      if (_prevPoolOrderCount >= 0 && newCount > _prevPoolOrderCount) {
+        // Yeni sipariş düştü — telefon varsayılan bildirim sesiyle bildirim göster
+        _showPoolLocalNotification(newCount);
+      }
+      if (mounted) {
+        setState(() {
+          _poolOrderCount = newCount;
+          _prevPoolOrderCount = newCount;
+        });
+      }
+    });
   }
 
   Future<void> _openPoolScreen() async {
@@ -614,6 +722,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  /// Web panel genel ayarlardan restoran marker gösterim ayarını oku
+  Future<void> _loadRestaurantSettings() async {
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('t_settings')
+          .doc(_bayId.toString())
+          .get();
+      if (snap.exists) {
+        final show = snap.data()?['mapSettings']?['showRestaurantOrderCounts'];
+        if (mounted) {
+          setState(() => _showRestaurantMarkers = show != false);
+        }
+      }
+    } catch (e) {
+      print('⚠️ Restoran marker ayarı yüklenemedi: $e');
+    }
   }
 
   /// 🏪 Bay'a bağlı restoranları yükle
@@ -752,6 +878,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       } catch (e2) {
         print('❌ Alternatif path başarısız: $e2');
       }
+    }
+  }
+
+  /// 🔔 Havuz siparişi bildirim sesini çal (ding.mp3)
+  Future<void> _playPoolNotificationSound() async {
+    try {
+      await _poolNotificationAudioPlayer.stop();
+      await _poolNotificationAudioPlayer.setVolume(1.0);
+      await _poolNotificationAudioPlayer.setReleaseMode(ReleaseMode.release);
+      await _poolNotificationAudioPlayer.play(
+        AssetSource('sounds/ding.mp3'),
+        mode: PlayerMode.mediaPlayer,
+        volume: 1.0,
+      );
+      print('✅ Havuz ses çalma başarılı: sounds/ding.mp3');
+    } catch (e) {
+      print('❌ Havuz ses çalma hatası (ding.mp3): $e');
+      try {
+        await _poolNotificationAudioPlayer.play(
+          AssetSource('sounds/definite.mp3'),
+          mode: PlayerMode.mediaPlayer,
+          volume: 1.0,
+        );
+      } catch (_) {}
     }
   }
 
@@ -1658,6 +1808,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
       
       // 🏪 Restoran marker'ları (sipariş yoğunluk haritası)
+      if (_showRestaurantMarkers) {
       for (var entry in _restaurants.entries) {
         final restaurantId = entry.key;
         final restaurantData = entry.value;
@@ -1684,17 +1835,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         );
       }
+      }
     }
   }
 
   /// Sipariş detay modal aç (9. Düzeltme: Modern tasarım)
   void _showOrderBottomSheet(OrderModel order) {
+    if (_orderDetailSheetOpen) return;
+    _orderDetailSheetOpen = true;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => ModernOrderDetailSheet(order: order),
-    );
+    ).whenComplete(() {
+      if (mounted) setState(() => _orderDetailSheetOpen = false);
+    });
   }
 
   /// 🏪 Restoran marker icon oluştur (renk + sipariş sayısı)

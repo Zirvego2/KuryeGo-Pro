@@ -80,6 +80,8 @@ class _ExternalOrderScreenState extends State<ExternalOrderScreen> {
           'loc': loc,
         });
       }
+      items.sort((a, b) =>
+          (a['name'] as String).compareTo(b['name'] as String));
       if (!mounted) return;
       setState(() {
         _works = items;

@@ -10,6 +10,7 @@ import '../services/firebase_service.dart';
 import '../services/platform_api_service.dart';
 import '../services/sms_service.dart';
 import '../services/javipos_api_service.dart';
+import '../services/sepettakip_status_service.dart';
 import '../utils/payment_change_logger.dart';
 import '../utils/network_utils.dart';
 import '../services/courier_cash_transaction_service.dart';
@@ -173,6 +174,17 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
     try {
       _countdownTimer?.cancel(); // Countdown'u durdur
       await FirebaseService.acceptOrder(widget.order.docId);
+
+      if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+        unawaited(
+          SepettakipStatusService.notifyAssigned(
+            orderId: widget.order.sId,
+            courierId: widget.order.sCourier,
+          ).catchError((e) {
+            print('⚠️ Sepettakip assigned bildirimi hatasi: $e');
+          }),
+        );
+      }
 
       // ⭐ JaviPos API çağrısı (Status: "2" = Hazırlanıyor)
       if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
@@ -468,6 +480,17 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
           receivedTime: DateTime.now(),
         );
 
+        if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+          unawaited(
+            SepettakipStatusService.notifyPickedUp(
+              orderId: widget.order.sId,
+              courierId: widget.order.sCourier,
+            ).catchError((e) {
+              print('⚠️ Sepettakip picked_up bildirimi hatasi: $e');
+            }),
+          );
+        }
+
         // Kurye için yeni alan: teslim alındığında yolda=true
         await FirebaseService.updateCourierOnTheWay(widget.order.sCourier, true);
 
@@ -582,6 +605,17 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             2,
             deliveredTime: DateTime.now(),
           );
+
+          if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+            unawaited(
+              SepettakipStatusService.notifyDelivered(
+                orderId: widget.order.sId,
+                courierId: widget.order.sCourier,
+              ).catchError((e) {
+                print('⚠️ Sepettakip delivered bildirimi hatasi: $e');
+              }),
+            );
+          }
 
           // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
           await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
@@ -726,6 +760,16 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
                 if (widget.order.ssPaytype != 3) 's_pay.ss_paytype': _paymentMethod == 'cash' ? 0 : 1,
               },
             );
+            if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+              unawaited(
+                SepettakipStatusService.notifyDelivered(
+                  orderId: widget.order.sId,
+                  courierId: widget.order.sCourier,
+                ).catchError((e) {
+                  print('⚠️ Sepettakip delivered bildirimi hatasi: $e');
+                }),
+              );
+            }
             // Nakit transaction kaydı
             if (cash > 0) {
               await CourierCashTransactionService.createCashTransaction(
@@ -749,6 +793,16 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
               deliveredTime: deliveredTime,
               paymentData: {},
             );
+            if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+              unawaited(
+                SepettakipStatusService.notifyDelivered(
+                  orderId: widget.order.sId,
+                  courierId: widget.order.sCourier,
+                ).catchError((e) {
+                  print('⚠️ Sepettakip delivered bildirimi hatasi: $e');
+                }),
+              );
+            }
           }
 
           // Platform API çağrısı (Teslim Et - Kapıda Ödeme)

@@ -1138,6 +1138,22 @@ class _ShiftMenuSheetState extends State<ShiftMenuSheet> {
     setState(() => _isProcessing = true);
 
     try {
+      // Guard: Firestore'dan güncel s_stat oku — offline (0) ise yazma
+      final courierQuery = await FirebaseService.db
+          .collection('t_courier')
+          .where('s_id', isEqualTo: widget.courierId)
+          .limit(1)
+          .get();
+
+      if (courierQuery.docs.isNotEmpty) {
+        final freshStat = courierQuery.docs.first.data()['s_stat'] as int? ?? 0;
+        if (freshStat == ShiftService.STATUS_OFFLINE) {
+          print('ℹ️ Guard: Kurye offline (s_stat=0), _endEmergency s_stat değiştirilmedi.');
+          if (mounted) setState(() => _isProcessing = false);
+          return;
+        }
+      }
+
       await FirebaseService.updateCourierStatus(
         widget.courierId,
         ShiftService.STATUS_AVAILABLE,

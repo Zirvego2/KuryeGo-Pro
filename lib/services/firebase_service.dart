@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:image_picker/image_picker.dart';
 import 'location_service.dart';
+import '../utils/restaurant_pricing_fee.dart';
 
 /// Firebase Firestore Servisi
 /// React Native firebase.js karşılığı
@@ -504,6 +507,51 @@ class FirebaseService {
     }
   }
 
+  /// Bayi [t_bay.s_settings.restaurantPricingEnabled] — web pageSettings ile aynı.
+  static Future<bool> isRestaurantPricingEnabled(int bayId) async {
+    try {
+      final bayQuery = await db
+          .collection('t_bay')
+          .where('s_id', isEqualTo: bayId)
+          .limit(1)
+          .get();
+      if (bayQuery.docs.isEmpty) return false;
+      final bayData = bayQuery.docs.first.data();
+      final settings = bayData['s_settings'] as Map<String, dynamic>?;
+      return settings?['restaurantPricingEnabled'] == true;
+    } catch (e) {
+      print('❌ isRestaurantPricingEnabled hatası: $e');
+      return false;
+    }
+  }
+
+  /// [t_restaurant_pricing] aktif kayıtlar — restoran ID (s_work_id) → fiyat.
+  static Future<Map<int, RestaurantWorkPricing>>
+      getActiveRestaurantPricingByCourier(int bayId, int courierId) async {
+    try {
+      final snap = await db
+          .collection('t_restaurant_pricing')
+          .where('s_bay', isEqualTo: bayId)
+          .where('s_courier_id', isEqualTo: courierId)
+          .where('is_active', isEqualTo: true)
+          .get();
+
+      final Map<int, RestaurantWorkPricing> map = {};
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final workRaw = data['s_work_id'];
+        final workId = parseWorkId(workRaw);
+        if (workId == null) continue;
+        map[workId] = RestaurantWorkPricing.fromFirestore(data);
+      }
+      print('🏪 t_restaurant_pricing: ${map.length} restoran kaydı (kurye $courierId)');
+      return map;
+    } catch (e) {
+      print('❌ getActiveRestaurantPricingByCourier hatası: $e');
+      return {};
+    }
+  }
+
   /// ⭐ Kurye statusunu dinle (Real-time)
   /// s_stat: 0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza
   static Stream<int> watchCourierStatus(int courierId) {
@@ -522,9 +570,11 @@ class FirebaseService {
       
       final courierData = snapshot.docs.first.data();
       // ⭐ KRİTİK DÜZELTMESİ: s_stat null ise OFFLINE (0) döndür (eskiden 1 döndürüyordu)
-      final status = courierData['s_stat'] ?? 0;
+      // Tip güvenli parse: Firestore'dan int veya String gelebilir
+      final rawStatus = courierData['s_stat'] ?? 0;
+      final status = rawStatus is int ? rawStatus : (int.tryParse(rawStatus.toString()) ?? 0);
       print('👤 Kurye statüsü: $status');
-      return status as int;
+      return status;
     }).handleError((error) {
       print('❌ Kurye statü dinleme hatası: $error');
       return 0; // Güvenli default: OFFLINE (eskiden 1 → "müsait" döndürüyordu)
@@ -701,6 +751,81 @@ class FirebaseService {
     } catch (e) {
       print('❌ externalOrderEntryEnabled okuma hatası: $e');
       return false;
+    }
+  }
+
+  /// Firestore [t_courier.s_photo_url] — profil fotoğrafı adresi.
+  static Future<String?> getCourierPhotoUrl(int courierId) async {
+    try {
+      final q = await db
+          .collection('t_courier')
+          .where('s_id', isEqualTo: courierId)
+          .limit(1)
+          .get();
+      if (q.docs.isEmpty) return null;
+      final u = q.docs.first.data()['s_photo_url'];
+      if (u is String && u.isNotEmpty) return u;
+      return null;
+    } catch (e) {
+      print('❌ getCourierPhotoUrl: $e');
+      return null;
+    }
+  }
+
+  /// Seçilen görseli Storage'a yükler, [t_courier.s_photo_url] güncellenir.
+  /// Yol: `courier_profiles/{courierId}/profile.{ext}`
+  static Future<String?> uploadCourierProfilePhoto(int courierId, XFile file) async {
+    try {
+      final name = file.name.toLowerCase();
+      final ext = name.contains('.') ? name.split('.').last : 'jpg';
+      final safeExt = ['jpg', 'jpeg', 'png', 'webp'].contains(ext) ? ext : 'jpg';
+      final contentType = safeExt == 'png'
+          ? 'image/png'
+          : (safeExt == 'webp' ? 'image/webp' : 'image/jpeg');
+
+      final ref = FirebaseStorage.instance
+          .ref('courier_profiles/$courierId/profile.$safeExt');
+      final bytes = await file.readAsBytes();
+      await ref.putData(bytes, SettableMetadata(contentType: contentType));
+
+      final url = await ref.getDownloadURL();
+
+      final q = await db
+          .collection('t_courier')
+          .where('s_id', isEqualTo: courierId)
+          .limit(1)
+          .get();
+      if (q.docs.isEmpty) return null;
+
+      await q.docs.first.reference.update({'s_photo_url': url});
+      print('✅ Profil fotoğrafı güncellendi: kurye $courierId');
+      return url;
+    } catch (e) {
+      print('❌ uploadCourierProfilePhoto: $e');
+      rethrow;
+    }
+  }
+
+  /// Profil fotoğrafını kaldırır (Firestore + Storage).
+  static Future<void> clearCourierProfilePhoto(int courierId) async {
+    try {
+      for (final e in ['jpg', 'jpeg', 'png', 'webp']) {
+        try {
+          await FirebaseStorage.instance
+              .ref('courier_profiles/$courierId/profile.$e')
+              .delete();
+        } catch (_) {}
+      }
+      final q = await db
+          .collection('t_courier')
+          .where('s_id', isEqualTo: courierId)
+          .limit(1)
+          .get();
+      if (q.docs.isEmpty) return;
+      await q.docs.first.reference.update({'s_photo_url': FieldValue.delete()});
+    } catch (e) {
+      print('❌ clearCourierProfilePhoto: $e');
+      rethrow;
     }
   }
 }

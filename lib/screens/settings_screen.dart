@@ -60,24 +60,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
+        toolbarHeight: 48,
         title: const Text(
           '⚙️ Ayarlar',
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 17,
+          ),
         ),
         backgroundColor: Colors.white,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: const IconThemeData(color: Colors.black, size: 22),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Gizlilik & Güvenlik
                   _buildSectionTitle('🔒 Gizlilik & Güvenlik'),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildSettingTile(
                     icon: Icons.privacy_tip,
                     title: 'Gizlilik Politikası',
@@ -85,7 +89,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     iconColor: Colors.blue,
                     onTap: _openPrivacyPolicy,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildSettingTile(
                     icon: Icons.location_on,
                     title: 'Konum Kullanımı',
@@ -93,7 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     iconColor: Colors.green,
                     onTap: _showLocationUsageDialog,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildSettingTile(
                     icon: Icons.delete_forever,
                     title: 'Hesabımı Sil',
@@ -102,25 +106,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onTap: _showDeleteAccountDialog,
                   ),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 20),
 
                   // Uygulama Bilgisi (Kişisel Bilgiler)
                   _buildSectionTitle('ℹ️ Kişisel Bilgiler'),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildInfoCard(
                     icon: Icons.info,
                     title: 'Sürüm',
                     value: _appVersion,
                     iconColor: Colors.purple,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildInfoCard(
                     icon: Icons.person,
                     title: 'Kullanıcı Adı',
                     value: widget.courierName,
                     iconColor: Colors.orange,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildInfoCard(
                     icon: Icons.badge,
                     title: 'Kurye ID',
@@ -128,10 +132,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     iconColor: Colors.teal,
                   ),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 20),
 
                   _buildSectionTitle('🏅 Ödül & Ceza'),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildSettingTile(
                     icon: Icons.account_balance,
                     title: 'Ödül ve ceza kayıtlarım',
@@ -151,11 +155,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 20),
 
                   // Destek
                   _buildSectionTitle('💬 Destek'),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   _buildSettingTile(
                     icon: Icons.help_outline,
                     title: 'Yardım & Destek',
@@ -171,7 +175,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
 
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 24),
                 ],
               ),
             ),
@@ -181,11 +185,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// Bölüm başlığı
   Widget _buildSectionTitle(String title) {
     return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      padding: const EdgeInsets.only(left: 2, bottom: 4),
       child: Text(
         title,
         style: const TextStyle(
-          fontSize: 16,
+          fontSize: 14,
           fontWeight: FontWeight.bold,
           color: Colors.black87,
         ),
@@ -204,29 +208,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
             ),
           ],
         ),
         child: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(7),
               decoration: BoxDecoration(
                 color: iconColor.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(icon, color: iconColor, size: 24),
+              child: Icon(icon, color: iconColor, size: 20),
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -234,23 +238,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   Text(
                     title,
                     style: const TextStyle(
-                      fontSize: 16,
+                      fontSize: 14,
                       fontWeight: FontWeight.w600,
                       color: Colors.black87,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 2),
                   Text(
                     subtitle,
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: 12,
+                      height: 1.25,
                       color: Colors.grey[600],
                     ),
                   ),
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, color: Colors.grey[400]),
+            Icon(Icons.chevron_right, color: Colors.grey[400], size: 20),
           ],
         ),
       ),
@@ -267,29 +272,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required ValueChanged<bool> onChanged,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               color: iconColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(icon, color: iconColor, size: 24),
+            child: Icon(icon, color: iconColor, size: 20),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -297,26 +302,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: Colors.black87,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text(
                   subtitle,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 12,
+                    height: 1.25,
                     color: Colors.grey[600],
                   ),
                 ),
               ],
             ),
           ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: iconColor,
+          Transform.scale(
+            scale: 0.88,
+            child: Switch(
+              value: value,
+              onChanged: onChanged,
+              activeThumbColor: iconColor,
+            ),
           ),
         ],
       ),
@@ -331,29 +340,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required Color iconColor,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               color: iconColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(icon, color: iconColor, size: 24),
+            child: Icon(icon, color: iconColor, size: 20),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -361,15 +370,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Text(
                   title,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 12,
                     color: Colors.grey[600],
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text(
                   value,
                   style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: Colors.black87,
                   ),

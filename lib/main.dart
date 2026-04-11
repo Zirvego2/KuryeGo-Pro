@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'firebase_options.dart';
 import 'services/location_service.dart';
 import 'services/notification_service.dart';
@@ -15,6 +16,8 @@ void main() async {
   print('🚀 ========================================');
   
   WidgetsFlutterBinding.ensureInitialized();
+
+  await initializeDateFormatting('tr', null);
 
   // Firebase başlat (iOS'ta AppDelegate'te zaten configure edilmiş olabilir)
   print('🔥 Firebase başlatılıyor...');

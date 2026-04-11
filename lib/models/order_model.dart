@@ -57,6 +57,8 @@ class OrderModel {
   // Yeni nesil ödeme alanları (paymentMethodOriginal)
   final int? paymentMethodId;     // paymentMethodOriginal.id
   final String? paymentMethodText; // paymentMethodOriginal.text
+  final String? sSource; // Kaynak (orn: sepettakip)
+  final String? sSepettakipOrderId; // Sepettakip dis siparis id
 
   OrderModel({
     required this.docId,
@@ -97,6 +99,8 @@ class OrderModel {
     this.javiPosid,
     this.paymentMethodId,
     this.paymentMethodText,
+    this.sSource,
+    this.sSepettakipOrderId,
   });
 
   /// GeoPoint'i Map'e çevir
@@ -183,6 +187,8 @@ class OrderModel {
               ? (data['paymentMethodOriginal']['id'] as int)
               : int.tryParse(data['paymentMethodOriginal']['id']?.toString() ?? '')),
       paymentMethodText: data['paymentMethodOriginal']?['text']?.toString(),
+      sSource: data['s_source']?.toString(),
+      sSepettakipOrderId: data['s_sepettakip_order_id']?.toString(),
     );
   }
 }

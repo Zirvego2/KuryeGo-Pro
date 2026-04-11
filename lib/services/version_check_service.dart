@@ -15,8 +15,7 @@ class VersionCheckService {
   /// Versiyon bilgisi modeli
   static const String _versionCollection = 'app_version';
   static const String _versionDocument = 'current';
-  static const String _settingsDocument = 'settings'; // ⭐ Ayarlar için ayrı document
-  
+
   /// Versiyon kontrolü yap
   /// 
   /// Returns: {
@@ -91,44 +90,26 @@ class VersionCheckService {
       
       final isMandatory = versionData['mandatory'] as bool? ?? false;
       final updateMessage = versionData['message'] as String?;
-      final playStoreUrl = versionData['playStoreUrl'] as String?;
-      final appStoreUrl = versionData['appStoreUrl'] as String?;
-      final directApkUrl = versionData['directApkUrl'] as String?; // ⭐ Acil durumlar için direkt APK linki
+      String? trimUrl(dynamic v) {
+        if (v == null) return null;
+        final s = v.toString().trim();
+        return s.isEmpty ? null : s;
+      }
+      final playStoreUrl = trimUrl(versionData['playStoreUrl']);
+      final appStoreUrl = trimUrl(versionData['appStoreUrl']);
+      final directApkUrl = trimUrl(versionData['directApkUrl']);
       
       print('📱 Sunucudaki versiyon (temizlenmiş): "$latestVersion"');
       print('📱 Zorunlu güncelleme: $isMandatory');
       print('📱 Mesaj: $updateMessage');
       print('📱 Direct APK URL: ${directApkUrl != null ? "Mevcut" : "Yok"}');
-      
-      // ⭐ Settings document'ini kontrol et (APK kullanımı için)
-      bool useDirectApk = false;
-      String? finalDirectApkUrl;
-      
-      try {
-        print('📱 Settings document kontrol ediliyor...');
-        final settingsDoc = await _db
-            .collection(_versionCollection)
-            .doc(_settingsDocument)
-            .get();
-        
-        if (settingsDoc.exists) {
-          final settingsData = settingsDoc.data();
-          useDirectApk = settingsData?['useDirectApk'] as bool? ?? false;
-          print('📱 useDirectApk ayarı: $useDirectApk');
-          
-          // Eğer useDirectApk true ise ve directApkUrl varsa, onu kullan
-          if (useDirectApk && directApkUrl != null && directApkUrl.isNotEmpty) {
-            finalDirectApkUrl = directApkUrl;
-            print('📱 ✅ Direkt APK linki aktif: $finalDirectApkUrl');
-          } else {
-            print('📱 ⚠️ Direkt APK linki kullanılmayacak (useDirectApk: $useDirectApk, directApkUrl: ${directApkUrl != null ? "Mevcut" : "Yok"})');
-          }
-        } else {
-          print('📱 ⚠️ Settings document bulunamadı, varsayılan olarak Play Store kullanılacak');
-        }
-      } catch (e) {
-        print('⚠️ Settings document okuma hatası: $e');
-        // Hata durumunda Play Store kullanılacak
+
+      // ⭐ current.directApkUrl doluysa her zaman direkt APK indirme (settings/useDirectApk gerekmez)
+      final bool useDirectApk =
+          directApkUrl != null && directApkUrl.isNotEmpty;
+      final String? finalDirectApkUrl = useDirectApk ? directApkUrl : null;
+      if (useDirectApk) {
+        print('📱 ✅ directApkUrl kullanılacak (direkt indirme): $finalDirectApkUrl');
       }
       
       // Versiyonları karşılaştır
@@ -147,8 +128,8 @@ class VersionCheckService {
         'updateMessage': updateMessage,
         'playStoreUrl': playStoreUrl,
         'appStoreUrl': appStoreUrl,
-        'directApkUrl': finalDirectApkUrl, // ⭐ Sadece useDirectApk true ise kullanılacak
-        'useDirectApk': useDirectApk, // ⭐ Debug için
+        'directApkUrl': finalDirectApkUrl,
+        'useDirectApk': useDirectApk,
       };
     } catch (e, stackTrace) {
       print('❌ Versiyon kontrolü hatası: $e');

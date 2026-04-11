@@ -12,6 +12,7 @@ import '../services/platform_api_service.dart';
 import '../services/sms_service.dart';
 import '../services/javipos_api_service.dart';
 import '../services/courier_cash_transaction_service.dart';
+import '../services/sepettakip_status_service.dart';
 import '../utils/network_utils.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -27,6 +28,8 @@ class ModernOrderDetailSheet extends StatefulWidget {
 
 class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
   bool _isProcessing = false;
+  /// Teslim Et öncesi ödeme diyaloğu açıkken çift dokunuşu engeller
+  bool _deliverDialogActive = false;
   Timer? _countdownTimer;
   int? _remainingTime;
   Timer? _buttonCountdownTimer; // ⭐ Buton countdown için
@@ -270,9 +273,21 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
   }
 
   Future<void> _acceptOrder() async {
+    if (_isProcessing) return;
     setState(() => _isProcessing = true);
     try {
       await FirebaseService.acceptOrder(widget.order.docId);
+
+      if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+        unawaited(
+          SepettakipStatusService.notifyAssigned(
+            orderId: widget.order.sId,
+            courierId: widget.order.sCourier,
+          ).catchError((e) {
+            print('⚠️ Sepettakip assigned bildirimi hatasi: $e');
+          }),
+        );
+      }
       
       // ⭐ JaviPos API çağrısı (Status: "2" = Hazırlanıyor)
       if (widget.order.javiPosid != null && widget.order.javiPosid!.isNotEmpty &&
@@ -303,6 +318,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
   }
 
   Future<void> _rejectOrder() async {
+    if (_isProcessing) return;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -515,6 +531,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
   }
 
   Future<void> _pickupOrder() async {
+    if (_isProcessing) return;
     final hasInternet = await NetworkUtils.hasInternetConnection();
     if (!hasInternet) {
       if (mounted) {
@@ -539,6 +556,17 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         's_received': Timestamp.now(),
         's_tracking_token': trackingToken, // ⭐ Tracking token ekle
       });
+
+      if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+        unawaited(
+          SepettakipStatusService.notifyPickedUp(
+            orderId: widget.order.sId,
+            courierId: widget.order.sCourier,
+          ).catchError((e) {
+            print('⚠️ Sepettakip picked_up bildirimi hatasi: $e');
+          }),
+        );
+      }
 
       // Kurye için yeni alan: teslim alındığında yolda=true
       await FirebaseService.updateCourierOnTheWay(widget.order.sCourier, true);
@@ -645,6 +673,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
 
   /// 💰 Ödeme yöntemi doğrulama ve teslim
   Future<void> _deliverOrder() async {
+    if (_isProcessing || _deliverDialogActive) return;
     final hasInternet = await NetworkUtils.hasInternetConnection();
     if (!hasInternet) {
       if (mounted) {
@@ -655,17 +684,19 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       return;
     }
 
-    // ⭐ Önce ödeme doğrulama dialogu göster
-    final confirmed = await _showPaymentConfirmationDialog();
-    
-    if (confirmed != true) {
-      print('❌ Teslim iptal edildi (Ödeme doğrulanamadı)');
-      return;
-    }
-    
-    // ⭐ Ödeme onaylandı, teslim et
-    setState(() => _isProcessing = true);
+    setState(() => _deliverDialogActive = true);
     try {
+      // ⭐ Önce ödeme doğrulama dialogu göster
+      final confirmed = await _showPaymentConfirmationDialog();
+
+      if (confirmed != true) {
+        print('❌ Teslim iptal edildi (Ödeme doğrulanamadı)');
+        return;
+      }
+
+      // ⭐ Ödeme onaylandı, teslim et
+      setState(() => _isProcessing = true);
+      try {
       final deliveredTime = DateTime.now();
       
       // Siparişin güncel ödeme bilgilerini al (dialog'da güncellenmiş olabilir)
@@ -689,6 +720,17 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         's_ddate': Timestamp.fromDate(deliveredTime),
         's_delivered': Timestamp.fromDate(deliveredTime),
       });
+
+      if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
+        unawaited(
+          SepettakipStatusService.notifyDelivered(
+            orderId: widget.order.sId,
+            courierId: widget.order.sCourier,
+          ).catchError((e) {
+            print('⚠️ Sepettakip delivered bildirimi hatasi: $e');
+          }),
+        );
+      }
 
       // ⭐ Nakit transaction kaydı oluştur (eğer nakit ödeme varsa)
       if (cashAmount > 0) {
@@ -724,6 +766,9 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
+    }
+    } finally {
+      if (mounted) setState(() => _deliverDialogActive = false);
     }
   }
 
@@ -832,10 +877,16 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
 
       // ⭐ 3. Kuryenin başka aktif siparişi var mı kontrol et
       // Aktif sipariş: s_stat in [0, 1, 4] (0=Hazır, 1=Yolda, 4=Hazırlanıyor)
+      // Son 24 saat filtresi: eski/kapatılmamış hayalet siparişlerin kuryeyi meşgul
+      // takmasını önler.
+      final cutoff = Timestamp.fromDate(
+        DateTime.now().subtract(const Duration(hours: 24)),
+      );
       final activeOrdersQuery = await FirebaseFirestore.instance
           .collection('t_orders')
           .where('s_courier', whereIn: [courierId, courierId.toString()])
           .where('s_stat', whereIn: [0, 1, 4])
+          .where('s_cdate', isGreaterThan: cutoff)
           .get();
 
       final activeOrderCount = activeOrdersQuery.docs.length;
@@ -3081,7 +3132,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                       if (_courierOrderRejectEnabled == true) ...[
                         Expanded(
                           child: ElevatedButton(
-                            onPressed: _rejectOrder,
+                            onPressed:
+                                _isProcessing ? null : _rejectOrder,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.red,
                               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -3104,7 +3156,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                       Expanded(
                         flex: _courierOrderRejectEnabled == true ? 2 : 1,
                         child: ElevatedButton(
-                          onPressed: _acceptOrder,
+                          onPressed:
+                              _isProcessing ? null : _acceptOrder,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFFFF9800),
                             padding: const EdgeInsets.symmetric(vertical: 16),
@@ -3164,7 +3217,9 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
-        onPressed: isButtonEnabled
+        onPressed: isButtonEnabled &&
+                !_isProcessing &&
+                (isWaitingForPickup || !_deliverDialogActive)
             ? (isWaitingForPickup ? _pickupOrder : _deliverOrder)
             : null,
         style: ElevatedButton.styleFrom(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:io' show Platform;
 
@@ -26,6 +27,12 @@ class UpdateDialog extends StatelessWidget {
     this.appStoreUrl,
     this.directApkUrl,
   });
+
+  /// Firestore’da direkt APK linki varsa mağaza yerine yalnızca dosya indirilir.
+  bool get _hasDirectApk {
+    final a = directApkUrl?.trim();
+    return a != null && a.isNotEmpty;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -159,12 +166,12 @@ class UpdateDialog extends StatelessWidget {
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.download, size: 20),
-                SizedBox(width: 8),
-                Text('Güncelle'),
+                const Icon(Icons.download, size: 20),
+                const SizedBox(width: 8),
+                Text(_hasDirectApk ? 'APK İndir' : 'Güncelle'),
               ],
             ),
           ),
@@ -175,11 +182,11 @@ class UpdateDialog extends StatelessWidget {
 
   Future<void> _openStore(BuildContext context) async {
     try {
-      final url = _getStoreUrl();
+      final url = await _getStoreUrl();
       print('📱 Açılacak URL: $url');
       
-      // APK linki mi kontrol et
-      final isApkUrl = url.toLowerCase().endsWith('.apk');
+      // Firebase Storage: .../x.apk?alt=media&token=... — sorgu string'i yüzünden endsWith('.apk') yanlış olur
+      final isApkUrl = _isLikelyApkDownloadUrl(url);
       
       final uri = Uri.parse(url);
       
@@ -189,7 +196,8 @@ class UpdateDialog extends StatelessWidget {
         
         try {
           // Android DownloadManager kullan (platform channel)
-          const platform = MethodChannel('com.example.zirvego_flutter/download');
+          // MainActivity.kt ile aynı olmalı: com.zirvego.kurye/download
+          const platform = MethodChannel('com.zirvego.kurye/download');
           await platform.invokeMethod('downloadApk', {'url': url});
           print('📱 ✅ APK indirme başlatıldı (DownloadManager)');
           
@@ -290,26 +298,43 @@ class UpdateDialog extends StatelessWidget {
     }
   }
 
-  String _getStoreUrl() {
+  /// Gerçek paket adı (build.gradle applicationId) ile Play Store yedeği
+  Future<String> _getStoreUrl() async {
+    final pkg = (await PackageInfo.fromPlatform()).packageName;
+
     // Platform kontrolü
     if (!kIsWeb) {
       if (Platform.isAndroid) {
-        // ⭐ Direkt APK linki varsa (zaten settings'ten kontrol edilmiş, useDirectApk true ise gelir)
-        if (directApkUrl != null && directApkUrl!.isNotEmpty) {
-          print('📱 ✅ Direkt APK linki kullanılıyor: $directApkUrl');
-          return directApkUrl!;
+        final apk = directApkUrl?.trim();
+        if (apk != null && apk.isNotEmpty) {
+          print('📱 ✅ Direkt APK linki kullanılıyor: $apk');
+          return apk;
         }
-        // Direkt APK yoksa veya kullanılmıyorsa Play Store linkini kullan
         print('📱 Play Store linki kullanılıyor');
-        return playStoreUrl ?? 
-            'https://play.google.com/store/apps/details?id=com.example.zirvego_flutter';
+        final play = playStoreUrl?.trim();
+        if (play != null && play.isNotEmpty) return play;
+        return 'https://play.google.com/store/apps/details?id=$pkg';
       } else if (Platform.isIOS) {
-        return appStoreUrl ?? 
-            'https://apps.apple.com/app/id1234567890';
+        final store = appStoreUrl?.trim();
+        if (store != null && store.isNotEmpty) return store;
+        return 'https://apps.apple.com/app/id1234567890';
       }
     }
-    
-    // Fallback - önce directApkUrl, sonra playStoreUrl, sonra appStoreUrl
-    return directApkUrl ?? playStoreUrl ?? appStoreUrl ?? '';
+
+    return directApkUrl?.trim() ??
+        playStoreUrl?.trim() ??
+        appStoreUrl?.trim() ??
+        'https://play.google.com/store/apps/details?id=$pkg';
+  }
+
+  /// Doğrudan APK indirme (Firebase Storage dahil); mağaza HTTPS URL'lerini ele
+  static bool _isLikelyApkDownloadUrl(String url) {
+    final lower = url.toLowerCase().trim();
+    if (lower.contains('play.google.com') ||
+        lower.contains('apps.apple.com')) {
+      return false;
+    }
+    final pathOnly = lower.split('?').first;
+    return pathOnly.endsWith('.apk');
   }
 }

@@ -166,6 +166,25 @@ class NotificationService {
             ?.createNotificationChannel(defaultChannel);
         
         print('✅ Android notification channel OLUŞTURULDU: default');
+
+        // Havuz sipariş kanalı — telefon varsayılan bildirim sesi
+        final poolChannel = AndroidNotificationChannel(
+          'pool_orders_v3',
+          'Havuz Siparişleri',
+          description: 'Havuzda yeni sipariş olduğunda bildirim alırsınız',
+          importance: Importance.max,
+          playSound: true,
+          enableVibration: true,
+          vibrationPattern: Int64List.fromList([0, 400, 200, 400]),
+          showBadge: true,
+        );
+
+        await _localNotifications
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>()
+            ?.createNotificationChannel(poolChannel);
+
+        print('✅ Android notification channel OLUŞTURULDU: pool_orders_v3');
       }
       
       print('✅ Local notifications kuruldu');
@@ -455,6 +474,42 @@ class NotificationService {
   
   /// Mevcut token'ı döndür
   static String? get currentToken => _fcmToken;
+
+  /// Havuz - yeni sipariş local bildirimi (telefon varsayılan bildirim sesi)
+  static Future<void> showLocalPoolNotification({
+    required String title,
+    required String body,
+  }) async {
+    try {
+      final vibrationPattern = Int64List.fromList([0, 400, 200, 400]);
+
+      await _localNotifications.show(
+        DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        title,
+        body,
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            'pool_orders_v3',
+            'Havuz Siparişleri',
+            channelDescription: 'Havuzda yeni sipariş olduğunda bildirim alırsınız',
+            importance: Importance.max,
+            priority: Priority.max,
+            playSound: true,
+            enableVibration: true,
+            vibrationPattern: vibrationPattern,
+            icon: '@mipmap/ic_launcher',
+          ),
+          iOS: const DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+          ),
+        ),
+      );
+    } catch (e) {
+      print('❌ Havuz bildirim gösterilemedi: $e');
+    }
+  }
 }
 
 /// Background message handler (top-level function olmalı)

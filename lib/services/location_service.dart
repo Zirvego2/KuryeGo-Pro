@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -195,6 +196,9 @@ class LocationService {
     // ⭐ AKILLI KONUM TIMER - 10 saniye interval (50m + backend kontrolü ile optimize)
     // 💰 FATURA OPTİMİZASYONU: Lokal kontrol (Firestore/Backend maliyeti yok)
     print('⏰ Akıllı konum timer başlatıldı (10 saniye interval)');
+    
+    // 📦 HAVUZ SİPARİŞ DİNLEYİCİSİ — arka planda yeni sipariş gelince bildirim gönder
+    _startBackgroundPoolListener();
     
     int tickCount = 0; // Timer tik sayacı
     
@@ -895,6 +899,116 @@ class LocationService {
     }).catchError((e) {
       print('⚠️ Cache invalidate sinyal hatası: $e');
     });
+  }
+
+  // ─── Havuz Sipariş Arka Plan Dinleyicisi ───────────────────────────────────
+
+  static int _bgPoolPrevCount = -1;
+  static StreamSubscription<QuerySnapshot>? _bgPoolSubscription;
+
+  /// Arka plan izolat'ında havuz siparişlerini dinle ve bildirim gönder.
+  /// SharedPreferences'tan pool config okur (main isolat'ın yazdığı değerler).
+  @pragma('vm:entry-point')
+  static Future<void> _startBackgroundPoolListener() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool('pool_enabled') ?? false;
+      if (!enabled) {
+        print('📦 Havuz izni yok, arka plan dinleyicisi başlatılmadı');
+        return;
+      }
+
+      final bayId = prefs.getInt('pool_bay_id');
+      if (bayId == null) {
+        print('⚠️ Havuz bay_id bulunamadı');
+        return;
+      }
+
+      final scope = prefs.getString('pool_scope') ?? 'selected';
+      final idsRaw = prefs.getString('pool_business_ids') ?? '';
+      final allowedIds = idsRaw.isEmpty
+          ? <int>[]
+          : idsRaw
+              .split(',')
+              .map((s) => int.tryParse(s.trim()))
+              .whereType<int>()
+              .toList();
+
+      // flutter_local_notifications'ı background izolat'ında başlat
+      final localNotif = FlutterLocalNotificationsPlugin();
+      const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+      await localNotif.initialize(
+        const InitializationSettings(android: androidSettings),
+      );
+
+      // Havuz kanalını oluştur (telefon varsayılan bildirim sesi)
+      final Int64List vibPattern = Int64List.fromList([0, 400, 200, 400]);
+      final poolChannel = AndroidNotificationChannel(
+        'pool_orders_v3',
+        'Havuz Siparişleri',
+        description: 'Havuzda yeni sipariş olduğunda bildirim alırsınız',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+        vibrationPattern: vibPattern,
+        showBadge: true,
+      );
+      await localNotif
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(poolChannel);
+
+      print('📦 Arka plan havuz dinleyicisi başlatılıyor (bayId=$bayId, scope=$scope)');
+
+      _bgPoolSubscription?.cancel();
+      _bgPoolPrevCount = -1;
+
+      Query query = FirebaseFirestore.instance
+          .collection('t_orders')
+          .where('s_bay', isEqualTo: bayId)
+          .where('s_courier', isEqualTo: 0)
+          .where('s_stat', whereIn: [0, 4]);
+
+      _bgPoolSubscription = query.snapshots().listen((snapshot) async {
+        // Platform Valesi (s_delivery_type=1) ve yetki dışı siparişleri filtrele
+        final orders = snapshot.docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          if ((data['s_delivery_type'] as int? ?? 0) == 1) return false;
+          if (scope == 'all') return true;
+          final sWork = data['s_work'] as int? ?? 0;
+          return allowedIds.contains(sWork);
+        }).toList();
+
+        final newCount = orders.length;
+
+        if (_bgPoolPrevCount >= 0 && newCount > _bgPoolPrevCount) {
+          print('📦 Arka planda yeni havuz siparişi: $newCount (önceki: $_bgPoolPrevCount)');
+          await localNotif.show(
+            DateTime.now().millisecondsSinceEpoch.remainder(100000),
+            '📦 Havuzda $newCount sipariş var',
+            'Yeni sipariş havuza düştü. Hemen kontrol et!',
+            NotificationDetails(
+              android: AndroidNotificationDetails(
+                'pool_orders_v3',
+                'Havuz Siparişleri',
+                channelDescription: 'Havuzda yeni sipariş olduğunda bildirim alırsınız',
+                importance: Importance.max,
+                priority: Priority.max,
+                playSound: true,
+                enableVibration: true,
+                vibrationPattern: vibPattern,
+                icon: '@mipmap/ic_launcher',
+              ),
+            ),
+          );
+        }
+
+        _bgPoolPrevCount = newCount;
+      }, onError: (e) {
+        print('❌ Arka plan havuz dinleyicisi hatası: $e');
+      });
+    } catch (e) {
+      print('❌ _startBackgroundPoolListener başlatma hatası: $e');
+    }
   }
 }
 

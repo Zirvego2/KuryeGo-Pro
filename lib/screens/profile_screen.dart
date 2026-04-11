@@ -37,6 +37,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _soundEnabled = true;
   bool _vibrationEnabled = true;
   bool _autoRouteEnabled = true; // Rota özelliği aktif mi?
+  int _resetHour = 0; // Günlük istatistik sıfırlama saati
 
   // Kullanıcı bilgileri
   String _phone = '';
@@ -54,6 +55,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.initState();
     _loadProfileData();
     _loadRouteSetting();
+    _loadResetHour();
   }
   
   /// Rota özelliği ayarını yükle
@@ -82,6 +84,66 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  /// Günlük istatistik sıfırlama saatini yükle
+  Future<void> _loadResetHour() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        _resetHour = prefs.getInt('daily_reset_hour') ?? 0;
+      });
+    } catch (e) {
+      print('❌ Sıfırlama saati yüklenemedi: $e');
+    }
+  }
+
+  /// Günlük istatistik sıfırlama saatini seç ve kaydet
+  Future<void> _pickResetHour() async {
+    int tempHour = _resetHour;
+    final selectedHour = await showDialog<int>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Günlük Sıfırlama Saati'),
+          content: SizedBox(
+            height: 200,
+            child: ListWheelScrollView(
+              itemExtent: 44,
+              controller: FixedExtentScrollController(initialItem: tempHour),
+              onSelectedItemChanged: (i) => setDialogState(() => tempHour = i),
+              physics: const FixedExtentScrollPhysics(),
+              children: List.generate(
+                24,
+                (i) => Center(
+                  child: Text(
+                    '${i.toString().padLeft(2, '0')}:00',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: i == tempHour ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('İptal'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, tempHour),
+              child: const Text('Kaydet'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selectedHour == null || !mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('daily_reset_hour', selectedHour);
+    setState(() => _resetHour = selectedHour);
+  }
+
   /// Profil verilerini yükle
   Future<void> _loadProfileData() async {
     setState(() => _isLoading = true);
@@ -105,7 +167,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _iban = data['s_info']?['ss_iban'] ?? '';
           _plaka = data['s_info']?['ss_plaka'] ?? '';
           _vehicleModel = data['s_info']?['ss_vehicle_model'] ?? 'Motosiklet';
-          _courierStatus = data['s_stat'] ?? 1;
+          _courierStatus = data['s_stat'] ?? 0;
         });
 
         // Vardiya bilgilerini çek
@@ -240,6 +302,61 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     (value) {
                       _saveRouteSetting(value);
                     },
+                  ),
+
+                  const SizedBox(height: 10),
+
+                  // Günlük istatistik sıfırlama saati
+                  GestureDetector(
+                    onTap: _pickResetHour,
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.05),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2196F3).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.access_time, color: Color(0xFF2196F3), size: 22),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Günlük İstatistik Sıfırlama',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Her gün ${_resetHour.toString().padLeft(2, '0')}:00\'da paket / kazanç / km sıfırlanır',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.chevron_right, color: Colors.grey),
+                        ],
+                      ),
+                    ),
                   ),
 
                   const SizedBox(height: 20),

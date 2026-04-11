@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../services/firebase_service.dart';
+import '../utils/restaurant_pricing_fee.dart';
 
 /// 💰 Finans & Mutabakat Ekranı (YENİ VERSİYON)
 class FinanceScreen extends StatefulWidget {
@@ -32,13 +33,16 @@ class _FinanceScreenState extends State<FinanceScreen> {
   // Finansal veriler
   int _packageCount = 0;
   double _totalEarnings = 0.0;
-  double _totalDistance = 0.0;
+  double _totalExtraKm = 0.0;
   double _totalCash = 0.0;
   double _totalCard = 0.0;
   double _totalOnline = 0.0;
   
   // Restoran bazlı sipariş sayıları
   Map<String, int> _restaurantOrderCounts = {};
+
+  /// UI: Kazanç özeti restoran bazlı ücretlendirmeye göre mi hesaplandı
+  bool _restaurantPricingEnabled = false;
 
   @override
   void initState() {
@@ -72,22 +76,37 @@ class _FinanceScreenState extends State<FinanceScreen> {
       print('   Başlangıç: $startDateTime');
       print('   Bitiş: $endDateTime');
 
-      // ⭐ 1. Kurye ücretlendirme bilgisini çek (t_courier.s_pricing)
-      final pricing = await FirebaseService.getCourierPricingFromCourier(widget.courierId);
-      if (pricing == null) {
-        print('❌ Kurye ücretlendirme bilgisi yüklenemedi!');
-        setState(() => _isLoading = false);
-        return;
+      final restaurantMode =
+          await FirebaseService.isRestaurantPricingEnabled(widget.bayId);
+
+      Map<String, dynamic>? courierPricing;
+      Map<int, RestaurantWorkPricing> restaurantPricingMap = {};
+
+      if (restaurantMode) {
+        restaurantPricingMap = await FirebaseService.getActiveRestaurantPricingByCourier(
+          widget.bayId,
+          widget.courierId,
+        );
+      } else {
+        courierPricing = await FirebaseService.getCourierPricingFromCourier(widget.courierId);
+        if (courierPricing == null) {
+          print('❌ Kurye ücretlendirme bilgisi yüklenemedi!');
+          setState(() {
+            _isLoading = false;
+            _restaurantPricingEnabled = restaurantMode;
+          });
+          return;
+        }
+
+        final fixedFee = courierPricing['s_fixed_fee'] as double;
+        final minKm = courierPricing['s_min_km'] as double;
+        final perKmFee = courierPricing['s_per_km_fee'] as double;
+
+        print('   ✅ Ücretlendirme bilgisi (s_pricing):');
+        print('      Sabit Ücret: ${fixedFee.toStringAsFixed(2)}₺');
+        print('      Minimum KM: ${minKm.toStringAsFixed(2)} km');
+        print('      KM Başı Ücret: ${perKmFee.toStringAsFixed(2)}₺/km');
       }
-
-      final fixedFee = pricing['s_fixed_fee'] as double;
-      final minKm = pricing['s_min_km'] as double;
-      final perKmFee = pricing['s_per_km_fee'] as double;
-
-      print('   ✅ Ücretlendirme bilgisi:');
-      print('      Sabit Ücret: ${fixedFee.toStringAsFixed(2)}₺');
-      print('      Minimum KM: ${minKm.toStringAsFixed(2)} km');
-      print('      KM Başı Ücret: ${perKmFee.toStringAsFixed(2)}₺/km');
 
       // ⭐ Siparişleri çek - TESLİM TARİHİNE GÖRE (s_ddate)
       // Index: s_courier + s_stat + s_ddate ✅
@@ -104,7 +123,7 @@ class _FinanceScreenState extends State<FinanceScreen> {
       double card = 0.0;
       double online = 0.0;
       double earnings = 0.0;
-      double distance = 0.0;
+      double extraKmSum = 0.0;
       Map<String, int> restaurantCounts = {};
 
       print('   📦 Index sorgusu: ${ordersQuery.docs.length} sipariş');
@@ -127,29 +146,34 @@ class _FinanceScreenState extends State<FinanceScreen> {
           online += customerAmount;
         }
 
-        // Mesafe
-        final distanceRaw = data['s_dinstance'];
-        double dist = 0.0;
-        if (distanceRaw is String) {
-          dist = double.tryParse(distanceRaw) ?? 0.0;
-        } else if (distanceRaw is num) {
-          dist = distanceRaw.toDouble();
-        }
-        distance += dist;
+        final dist = parseOrderDistanceKm(data);
 
-        // ⭐ YENİ HESAPLAMA MANTIĞI:
-        // Kazanç = Sabit Ücret + (Mesafe > MinKM ? (Mesafe - MinKM) × KM Başı Ücret : 0)
-        
-        double orderEarnings = fixedFee; // Başlangıç: Sabit ücret
-        
-        // Ekstra KM hesaplama
-        if (dist > 0 && minKm > 0 && dist > minKm) {
-          final extraKm = dist - minKm;
-          final extraKmEarnings = extraKm * perKmFee;
-          orderEarnings += extraKmEarnings;
+        if (restaurantMode) {
+          final workId = parseWorkId(data['s_work']);
+          final rp = workId != null ? restaurantPricingMap[workId] : null;
+          if (rp == null) {
+            earnings += parsePayCurPacketFromOrder(data);
+          } else {
+            final result = calculateRestaurantPricingFee(rp, dist);
+            earnings += result.totalEarnings;
+            extraKmSum += result.extraKm;
+          }
+        } else {
+          final fixedFee = courierPricing!['s_fixed_fee'] as double;
+          final minKm = courierPricing['s_min_km'] as double;
+          final perKmFee = courierPricing['s_per_km_fee'] as double;
+
+          double orderEarnings = fixedFee;
+
+          if (dist > 0 && minKm > 0 && dist > minKm) {
+            final extraKm = dist - minKm;
+            extraKmSum += extraKm;
+            final extraKmEarnings = extraKm * perKmFee;
+            orderEarnings += extraKmEarnings;
+          }
+
+          earnings += orderEarnings;
         }
-        
-        earnings += orderEarnings;
 
         // Restoran bazlı say
         String restaurantName = data['s_restaurantName'] ?? '';
@@ -174,11 +198,12 @@ class _FinanceScreenState extends State<FinanceScreen> {
       setState(() {
         _packageCount = count;
         _totalEarnings = earnings;
-        _totalDistance = distance;
+        _totalExtraKm = extraKmSum;
         _totalCash = cash;
         _totalCard = card;
         _totalOnline = online;
         _restaurantOrderCounts = restaurantCounts;
+        _restaurantPricingEnabled = restaurantMode;
         _isLoading = false;
       });
 
@@ -186,7 +211,7 @@ class _FinanceScreenState extends State<FinanceScreen> {
       print('   ✅ MUTABAKAT SONUÇLARI:');
       print('      📦 Sipariş: $count');
       print('      💰 Kazanç: ${earnings.toStringAsFixed(2)}₺');
-      print('      🛣️ Mesafe: ${distance.toStringAsFixed(1)} km');
+      print('      🛣️ Ekstra km: ${extraKmSum.toStringAsFixed(2)} km');
       print('      💵 Nakit: ${cash.toStringAsFixed(0)}₺');
       print('      💳 Kart: ${card.toStringAsFixed(0)}₺');
       print('      📱 Online: ${online.toStringAsFixed(0)}₺');
@@ -301,24 +326,24 @@ class _FinanceScreenState extends State<FinanceScreen> {
               onRefresh: _loadFinanceData,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Tarih ve saat seçici
                     _buildDateTimePicker(),
                     
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 10),
                     
-                    // Genel özet
+                    // Toplam kazanç özeti
                     _buildGeneralSummary(),
                     
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 10),
                     
-                    // Ödeme türleri
+                    // Teslim edilmiş sipariş ödeme türü
                     _buildPaymentTypes(),
                     
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 10),
                     
                     // Restoran bazlı sipariş sayıları
                     _buildRestaurantOrders(),
@@ -332,15 +357,15 @@ class _FinanceScreenState extends State<FinanceScreen> {
   /// Tarih ve saat seçici
   Widget _buildDateTimePicker() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
+            blurRadius: 6,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
@@ -350,12 +375,12 @@ class _FinanceScreenState extends State<FinanceScreen> {
           const Text(
             '📅 Tarih ve Saat Seçimi',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: FontWeight.bold,
               color: Colors.black87,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           
           // Başlangıç
           Row(
@@ -365,41 +390,41 @@ class _FinanceScreenState extends State<FinanceScreen> {
                 child: InkWell(
                   onTap: _selectStartDate,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(
                       color: const Color(0xFFF5F5F5),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.calendar_today, size: 16, color: Color(0xFF2196F3)),
-                        const SizedBox(width: 8),
+                        const Icon(Icons.calendar_today, size: 14, color: Color(0xFF2196F3)),
+                        const SizedBox(width: 6),
                         Text(
                           DateFormat('dd MMM', 'tr').format(_startDate),
-                          style: const TextStyle(fontSize: 14),
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ],
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
                 child: InkWell(
                   onTap: _selectStartTime,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(
                       color: const Color(0xFFF5F5F5),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.access_time, size: 16, color: Color(0xFF2196F3)),
+                        const Icon(Icons.access_time, size: 14, color: Color(0xFF2196F3)),
                         const SizedBox(width: 4),
                         Text(
                           '${_startTime.hour.toString().padLeft(2, '0')}:${_startTime.minute.toString().padLeft(2, '0')}',
-                          style: const TextStyle(fontSize: 14),
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ],
                     ),
@@ -409,9 +434,9 @@ class _FinanceScreenState extends State<FinanceScreen> {
             ],
           ),
           
-          const SizedBox(height: 8),
-          const Center(child: Icon(Icons.arrow_downward, size: 16, color: Colors.grey)),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
+          const Center(child: Icon(Icons.arrow_downward, size: 14, color: Colors.grey)),
+          const SizedBox(height: 6),
           
           // Bitiş
           Row(
@@ -421,41 +446,41 @@ class _FinanceScreenState extends State<FinanceScreen> {
                 child: InkWell(
                   onTap: _selectEndDate,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(
                       color: const Color(0xFFF5F5F5),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.calendar_today, size: 16, color: Color(0xFFFF5722)),
-                        const SizedBox(width: 8),
+                        const Icon(Icons.calendar_today, size: 14, color: Color(0xFFFF5722)),
+                        const SizedBox(width: 6),
                         Text(
                           DateFormat('dd MMM', 'tr').format(_endDate),
-                          style: const TextStyle(fontSize: 14),
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ],
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
                 child: InkWell(
                   onTap: _selectEndTime,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(
                       color: const Color(0xFFF5F5F5),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.access_time, size: 16, color: Color(0xFFFF5722)),
+                        const Icon(Icons.access_time, size: 14, color: Color(0xFFFF5722)),
                         const SizedBox(width: 4),
                         Text(
                           '${_endTime.hour.toString().padLeft(2, '0')}:${_endTime.minute.toString().padLeft(2, '0')}',
-                          style: const TextStyle(fontSize: 14),
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ],
                     ),
@@ -469,22 +494,22 @@ class _FinanceScreenState extends State<FinanceScreen> {
     );
   }
 
-  /// Genel özet
+  /// Toplam kazanç özeti
   Widget _buildGeneralSummary() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           colors: [Color(0xFF2196F3), Color(0xFF1976D2)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF2196F3).withOpacity(0.3),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+            color: const Color(0xFF2196F3).withOpacity(0.25),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
@@ -492,20 +517,31 @@ class _FinanceScreenState extends State<FinanceScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            '📊 Genel Özet',
+            'Toplam Kazancım',
             style: TextStyle(
-              fontSize: 18,
+              fontSize: 15,
               fontWeight: FontWeight.bold,
               color: Colors.white,
             ),
           ),
-          const SizedBox(height: 16),
+          if (_restaurantPricingEnabled) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Restoran bazlı ücretlendirme aktif',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Colors.white.withOpacity(0.92),
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
               _summaryItem('Sipariş', '$_packageCount', Icons.local_shipping),
               _summaryItem('Kazanç', '${_totalEarnings.toStringAsFixed(2)}₺', Icons.attach_money),
-              _summaryItem('Mesafe', '${_totalDistance.toStringAsFixed(2)} km', Icons.route),
+              _summaryItem('Ekstra km', '${_totalExtraKm.toStringAsFixed(2)} km', Icons.route),
             ],
           ),
         ],
@@ -516,20 +552,21 @@ class _FinanceScreenState extends State<FinanceScreen> {
   Widget _summaryItem(String label, String value, IconData icon) {
     return Column(
       children: [
-        Icon(icon, color: Colors.white, size: 28),
-        const SizedBox(height: 4),
+        Icon(icon, color: Colors.white, size: 22),
+        const SizedBox(height: 2),
         Text(
           value,
           style: const TextStyle(
-            fontSize: 18,
+            fontSize: 14,
             fontWeight: FontWeight.bold,
             color: Colors.white,
           ),
+          textAlign: TextAlign.center,
         ),
         Text(
           label,
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 10,
             color: Colors.white.withOpacity(0.9),
           ),
         ),
@@ -537,20 +574,20 @@ class _FinanceScreenState extends State<FinanceScreen> {
     );
   }
 
-  /// Ödeme türleri
+  /// Teslim edilmiş sipariş ödeme türleri
   Widget _buildPaymentTypes() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          '💳 Ödeme Türleri',
+          'Teslim Edilmiş Sipariş Ödeme Türü',
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 14,
             fontWeight: FontWeight.bold,
             color: Colors.black87,
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
@@ -561,7 +598,7 @@ class _FinanceScreenState extends State<FinanceScreen> {
                 const Color(0xFFFF9800),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 8),
             Expanded(
               child: _paymentTypeCard(
                 'Kart',
@@ -570,7 +607,7 @@ class _FinanceScreenState extends State<FinanceScreen> {
                 const Color(0xFF2196F3),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 8),
             Expanded(
               child: _paymentTypeCard(
                 'Nakit',
@@ -587,28 +624,31 @@ class _FinanceScreenState extends State<FinanceScreen> {
 
   Widget _paymentTypeCard(String label, double amount, IconData icon, Color color) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3), width: 2),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.35), width: 1.5),
       ),
       child: Column(
         children: [
-          Icon(icon, color: color, size: 28),
-          const SizedBox(height: 8),
-          Text(
-            '${amount.toStringAsFixed(2)}₺',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: color,
+          Icon(icon, color: color, size: 20),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              '${amount.toStringAsFixed(2)}₺',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
             ),
           ),
           Text(
             label,
             style: TextStyle(
-              fontSize: 12,
+              fontSize: 10,
               color: Colors.grey[600],
             ),
           ),
@@ -633,42 +673,42 @@ class _FinanceScreenState extends State<FinanceScreen> {
         const Text(
           '🍽️ Restoran Bazlı Siparişler',
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 14,
             fontWeight: FontWeight.bold,
             color: Colors.black87,
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         ...sortedRestaurants.map((entry) {
           return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(16),
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(10),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset: const Offset(0, 2),
+                  blurRadius: 6,
+                  offset: const Offset(0, 1),
                 ),
               ],
             ),
             child: Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(8),
+                  padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
                     color: const Color(0xFF673AB7).withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(6),
                   ),
                   child: const Icon(
                     Icons.restaurant,
                     color: Color(0xFF673AB7),
-                    size: 24,
+                    size: 18,
                   ),
                 ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -676,16 +716,18 @@ class _FinanceScreenState extends State<FinanceScreen> {
                       Text(
                         entry.key,
                         style: const TextStyle(
-                          fontSize: 15,
+                          fontSize: 13,
                           fontWeight: FontWeight.w600,
                           color: Colors.black87,
                         ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 2),
+                      const SizedBox(height: 1),
                       Text(
                         '${entry.value} Sipariş',
                         style: TextStyle(
-                          fontSize: 13,
+                          fontSize: 11,
                           color: Colors.grey[600],
                         ),
                       ),
@@ -693,15 +735,15 @@ class _FinanceScreenState extends State<FinanceScreen> {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: const Color(0xFF673AB7),
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: Text(
                     '${entry.value}',
                     style: const TextStyle(
-                      fontSize: 16,
+                      fontSize: 13,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
                     ),
