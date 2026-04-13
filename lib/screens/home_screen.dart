@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
@@ -7,6 +10,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:audioplayers/audioplayers.dart';
 import '../services/firebase_service.dart';
@@ -16,6 +20,7 @@ import '../services/shift_log_service.dart';
 import '../services/break_service.dart';
 import '../services/route_service.dart';
 import '../services/pool_order_service.dart';
+import '../services/courier_location_api.dart';
 import '../services/notification_service.dart';
 import '../models/order_model.dart';
 import '../widgets/modern_order_detail_sheet.dart';
@@ -101,6 +106,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   StreamSubscription<QuerySnapshot>? _restaurantOrdersSubscription; // Kuryeye atanmamış siparişler stream'i
   StreamSubscription? _ordersSubscription; // ⭐ Sipariş stream subscription
   StreamSubscription<bool>? _courierOnTheWaySubscription;
+  StreamSubscription<Position>? _mapPositionSubscription;
 
   /// Çift dokunuşla üst üste sipariş detay bottom sheet açılmasını önler
   bool _orderDetailSheetOpen = false;
@@ -260,10 +266,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _ordersSubscription?.cancel(); // ⭐ Sipariş stream'ini iptal et
     _courierOnTheWaySubscription?.cancel();
     _poolCountSubscription?.cancel(); // Havuz sayım stream'ini iptal et
-    
-    // ⭐ Uygulama kapatılıyor flag'ini set et
-    _setAppRunningFlag(false); // Uygulama kapandı
-    print('🚫 Uygulama kapatılıyor - app_is_running = false');
+    _mapPositionSubscription?.cancel();
     
     // ⭐ Eğer vardiya kapalıysa background service'i durdur
     if (_courierStatus == 0) {
@@ -339,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await FirebaseService.refreshCourierOnTheWayFromOrders(_courierId!);
 
     // Konum takibini başlat (foreground - harita için)
-    _startLocationTracking();
+    unawaited(_startLocationTracking());
     unawaited(_ensureInitialLocationReady());
     
     // ⏰ Foreground location timer KAPALI - Background service zaten optimize edilmiş ve çalışıyor
@@ -1522,21 +1525,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       print('📍 Foreground: Konum alındı (${position.latitude}, ${position.longitude})');
       print('   Vardiya Durumu: $_courierStatus (${_getStatusName(_courierStatus)})');
       
-      // API'ye gönder
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final url = Uri.parse(
-          'https://zirvego.app/api/servis?x=${position.latitude}&y=${position.longitude}&s_id=$_courierId&t=$timestamp');
-
-      print('🌐 Foreground: API\'ye gönderiliyor...');
-      final response = await http.get(url).timeout(
-        const Duration(seconds: 10),
+      if (_courierId == null) return;
+      final speedKmhRaw = position.speed >= 0 ? position.speed * 3.6 : 0.0;
+      final speedKmh = speedKmhRaw < 3.0 ? 0.0 : speedKmhRaw;
+      final ok = await CourierLocationApi.submitWithRetry(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        courierId: _courierId!,
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        speedKmh: speedKmh,
       );
-
-      if (response.statusCode == 200) {
-        print('✅ Foreground: Konum gönderildi! Response: ${response.body}');
-      } else {
-        print('⚠️ Foreground: API hatası ${response.statusCode}');
-      }
+      print(ok ? '✅ Foreground: Konum gönderildi' : '⚠️ Foreground: Gönderim başarısız');
     } catch (e) {
       print('❌ Foreground: Konum gönderme hatası: $e');
     }
@@ -1580,32 +1579,35 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       print('✅ Konum alındı: (${position.latitude}, ${position.longitude})');
       print('🌐 API\'ye gönderiliyor...');
 
-      // API'ye gönder
-      final url = Uri.parse(
-          'https://zirvego.app/api/servis?x=${position.latitude}&y=${position.longitude}&s_id=$_courierId&t=${DateTime.now().millisecondsSinceEpoch}');
-      
-      print('📡 URL: $url');
+      if (_courierId == null) {
+        print('❌ courier id yok');
+        return;
+      }
+      final speedKmhRaw = position.speed >= 0 ? position.speed * 3.6 : 0.0;
+      final speedKmh = speedKmhRaw < 3.0 ? 0.0 : speedKmhRaw;
 
-      final response = await http.get(url).timeout(
-        const Duration(seconds: 10),
+      final ok = await CourierLocationApi.submitWithRetry(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        courierId: _courierId!,
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        speedKmh: speedKmh,
       );
 
-      print('📡 Response Code: ${response.statusCode}');
-      print('📥 Response Body: ${response.body}');
-
       if (mounted) {
-        if (response.statusCode == 200) {
+        if (ok) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ Test başarılı!\nKonum: (${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)})'),
+              content: Text(
+                  '✅ Test başarılı!\nKonum: (${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)})'),
               backgroundColor: Colors.green,
               duration: const Duration(seconds: 3),
             ),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('⚠️ API Hatası: ${response.statusCode}'),
+            const SnackBar(
+              content: Text('⚠️ API gönderimi başarısız (POST/GET)'),
               backgroundColor: Colors.orange,
             ),
           );
@@ -1648,8 +1650,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   DateTime? _lastMarkerUpdate; // Son marker güncelleme zamanı (throttle için)
   static const Duration _markerUpdateThrottle = Duration(seconds: 2); // Marker güncelleme throttle (2 saniye)
   
-  void _startLocationTracking() {
-    LocationService.getPositionStream().listen((position) {
+  Future<void> _startLocationTracking() async {
+    await _mapPositionSubscription?.cancel();
+    if (!kIsWeb && Platform.isIOS) {
+      await LocationService.ensureIosUnifiedPositionStream();
+    }
+    _mapPositionSubscription = LocationService.getPositionStream().listen((position) {
       if (mounted) {
         final newLocation = LatLng(position.latitude, position.longitude);
         

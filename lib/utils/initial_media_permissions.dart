@@ -10,8 +10,12 @@ const _kInitialMediaPermissionsKey = 'initial_media_permissions_v1';
 /// Ana ekrana ilk girişte (oturum açıkken) galeri/foto iznini uygulama içinden ister.
 /// Kamera izni istenmez (Android sistem diyaloğunda "video kaydı" metni çıkmaması için).
 /// Kurulum başına bir kez çalışır.
+///
+/// iOS: App Store 5.1.1(iv) — foto izni yalnızca kullanıcı profilde "Galeriden seç"
+/// dediğinde istenir ([MainProfileScreen]); ana ekranda proaktif istek yok.
 Future<void> requestInitialMediaPermissionsIfNeeded() async {
   if (kIsWeb) return;
+  if (Platform.isIOS) return;
 
   final prefs = await SharedPreferences.getInstance();
   if (prefs.getBool(_kInitialMediaPermissionsKey) == true) return;
@@ -19,13 +23,6 @@ Future<void> requestInitialMediaPermissionsIfNeeded() async {
   await prefs.setBool(_kInitialMediaPermissionsKey, true);
 
   try {
-    // Kamera izni istemiyoruz (Android sistem metninde "video kaydı" geçmesin diye);
-    // profil fotoğrafı yalnızca galeriden.
-    if (Platform.isIOS) {
-      await Permission.photos.request();
-      return;
-    }
-
     if (Platform.isAndroid) {
       final sdk = (await DeviceInfoPlugin().androidInfo).version.sdkInt;
       if (sdk >= 33) {

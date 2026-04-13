@@ -135,8 +135,9 @@ class _CourierApplicationScreenState extends State<CourierApplicationScreen> {
             ),
             content: const Text(
               'Kurye başvurunuz başarıyla alındı!\n\n'
-              'Başvurunuz incelendikten sonra size bilgi verilecektir. '
-              'Lütfen telefon ve e-posta adresinizi kontrol etmeyi unutmayın.',
+              'Başvurunuz incelendikten sonra ekibimiz sizi en kısa sürede telefonla arayacaktır. '
+              'Evrak doğrulama ve sonraki adımlar için e-posta adresinize bilgilendirme gönderilecektir.; '
+              'lütfen telefonunuzu ve e-postanızı (varsa) düzenli kontrol edin.',
             ),
             actions: [
               TextButton(

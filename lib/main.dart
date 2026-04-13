@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -10,12 +11,25 @@ import 'services/version_check_service.dart';
 import 'widgets/update_dialog.dart';
 import 'screens/login_screen.dart';
 
+final _locationLifecycleBridge = _LocationLifecycleBridge();
+
+/// iOS: ön plana dönünce kalıcı konum kuyruğunu gönder; konum akışını tazele
+class _LocationLifecycleBridge with WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(LocationService.onApplicationResumed());
+    }
+  }
+}
+
 void main() async {
   print('🚀 ========================================');
   print('🚀 UYGULAMA BAŞLATILIYOR...');
   print('🚀 ========================================');
   
   WidgetsFlutterBinding.ensureInitialized();
+  WidgetsBinding.instance.addObserver(_locationLifecycleBridge);
 
   await initializeDateFormatting('tr', null);
 

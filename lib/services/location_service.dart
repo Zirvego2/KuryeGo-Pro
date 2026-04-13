@@ -1,30 +1,43 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 import 'dart:ui';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../firebase_options.dart';
+import 'courier_location_api.dart';
+import 'native_location_bridge.dart';
 
 /// ⭐ KRİTİK: Background Location Service
 /// React Native service.js karşılığı
 /// Her 10 saniyede bir konum gönderir (uygulama kapalıyken bile)
+/// Tracking lifecycle değil, service controlled — yalnızca [stopService] ile durur.
 @pragma('vm:entry-point')
 class LocationService {
-  static const String _apiUrl = 'https://zirvego.app/api/servis';
   static const String _lastLocationUrl = 'https://zirvego.app/api/lastlocation';
-  static Timer? _locationTimer;
-  
-  // 📦 OFFLINE QUEUE - Network yokken konum buraya kaydedilir
-  static final List<Map<String, dynamic>> _locationQueue = [];
+
+  /// Kalıcı kuyruk (isolate / yeniden başlatma sonrası da korunur)
+  static const String _pendingQueuePrefsKey = 'location_pending_queue_json';
   static const int _maxQueueSize = 50;
+
+  /// iOS: tek bir CoreLocation akışı; harita + API aynı kaynaktan beslenir
+  static StreamSubscription<Position>? _iosUnifiedPositionSubscription;
+  static final StreamController<Position> _positionBroadcast =
+      StreamController<Position>.broadcast(sync: true);
+  static StreamSubscription<Position>? _iosApiPositionSubscription;
+  static int _iosStreamTickCount = 0;
   
   // 🔄 WATCHDOG SYSTEM - Task çalışıyor mu kontrol et
   static DateTime _lastLocationUpdate = DateTime.now();
@@ -84,6 +97,17 @@ class LocationService {
         onBackground: onIosBackground,
       ),
     );
+
+    if (!kIsWeb && Platform.isIOS) {
+      await ensureIosMainIsolateTracking();
+      await _hydrateSharedLastSentFromNative();
+      await _mergeNativePendingIntoFlutterQueue();
+      final prefs = await SharedPreferences.getInstance();
+      final cid = prefs.getInt('courier_id');
+      if (cid != null) {
+        await _processLocationQueue(cid);
+      }
+    }
   }
 
   /// Background service başlat
@@ -96,27 +120,50 @@ class LocationService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('courier_id', courierId);
     await prefs.setBool('app_is_running', true); // ⭐ Uygulama çalışıyor işaretle
+    await prefs.setBool('courier_location_tracking', true);
     print('💾 Courier ID kaydedildi: $courierId');
     print('🏁 app_is_running = true');
 
     // 🔄 Watchdog başlat
     _startWatchdog();
 
-    bool isRunning = await service.isRunning();
-    if (isRunning) {
+    final isRunning = await service.isRunning();
+    if (!isRunning) {
+      await service.startService();
+      print('✅✅✅ Background location service BAŞLATILDI');
+      print('🌐 API: ${CourierLocationApi.servisUrl}');
+    } else {
       print('⚠️ Konum servisi zaten çalışıyor');
-      return;
     }
 
-    await service.startService();
-    print('✅✅✅ Background location service BAŞLATILDI (15 saniye interval)');
-    print('🌐 API URL: $_apiUrl');
+    if (!kIsWeb && Platform.isIOS) {
+      await ensureIosMainIsolateTracking();
+      final prefs = await SharedPreferences.getInstance();
+      await NativeLocationBridge.setIosTrackingState(
+        enabled: true,
+        courierId: courierId,
+        apiToken: prefs.getString('location_api_token'),
+      );
+    }
   }
 
   /// Background service durdur
   static Future<void> stopService() async {
     final service = FlutterBackgroundService();
     service.invoke('stop');
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('courier_location_tracking', false);
+
+    if (!kIsWeb && Platform.isIOS) {
+      await NativeLocationBridge.setIosTrackingState(
+        enabled: false,
+        courierId: 0,
+        apiToken: null,
+      );
+    }
+
+    await stopIosMainIsolateTracking();
     
     // 🛑 Watchdog durdur
     _stopWatchdog();
@@ -205,23 +252,7 @@ class LocationService {
     Timer.periodic(const Duration(seconds: 10), (timer) async {
       tickCount++;
       print('⏰ Timer tick #$tickCount - ${DateTime.now()}');
-      
-      // ⭐ UYGULAMA AÇIK MI KONTROLÜ (Her 1 dakikada bir = her 6 tick)
-      if (tickCount % 6 == 0) {
-        print('🔍 Uygulama durumu kontrol ediliyor... (1 dakika geçti)');
-        final prefs = await SharedPreferences.getInstance();
-        final appIsRunning = prefs.getBool('app_is_running') ?? false;
-        
-        if (!appIsRunning) {
-          print('🚫 Uygulama kapalı tespit edildi - Service durduruluyor...');
-          timer.cancel();
-          service.invoke('stop');
-          return;
-        } else {
-          print('✅ Uygulama hala çalışıyor');
-        }
-      }
-      
+
       if (service is AndroidServiceInstance) {
         print('📱 Android service instance');
         
@@ -254,14 +285,223 @@ class LocationService {
           print('⚠️ Foreground service aktif DEĞİL');
         }
       } else {
-        // iOS için
-        print('📱 iOS service instance');
-        final shouldSend = await _shouldSendLocationByStatus(tickCount);
-        if (shouldSend) {
-          await _sendLocation();
+        // iOS: Timer tabanlı konum burada güvenilir değil; ana isolate + AppleSettings ile akış kullanılıyor.
+        if (tickCount % 18 == 0) {
+          print('📱 iOS: periyodik konum ana isolate akışında (flutter_background_service yalnızca yaşam döngüsü)');
         }
       }
     });
+  }
+
+  // ─── iOS ana isolate: arka plan konum akışı ─────────────────────────────────
+
+  static LocationSettings _platformCourierStreamSettings() {
+    if (kIsWeb) {
+      return const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 40,
+      );
+    }
+    if (Platform.isIOS) {
+      return AppleSettings(
+        accuracy: LocationAccuracy.high,
+        activityType: ActivityType.automotiveNavigation,
+        distanceFilter: 40,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+        allowBackgroundLocationUpdates: true,
+      );
+    }
+    return const LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 10,
+    );
+  }
+
+  /// Harita ve iOS konum API için ortak yayın (yalnızca bir native abonelik).
+  static Stream<Position> get courierPositionBroadcast => _positionBroadcast.stream;
+
+  /// Harita + API için tek native konum kaynağı (iOS).
+  /// iOS app kill edilirse tracking durur (Apple limitation).
+  static Future<void> ensureIosUnifiedPositionStream() async {
+    if (kIsWeb || !Platform.isIOS) return;
+
+    if (_iosUnifiedPositionSubscription != null) return;
+
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    final permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      return;
+    }
+
+    _iosUnifiedPositionSubscription = Geolocator.getPositionStream(
+      locationSettings: _platformCourierStreamSettings(),
+    ).listen(
+      _positionBroadcast.add,
+      onError: (Object e) {
+        print('❌ iOS birleşik konum akışı hatası: $e');
+      },
+    );
+    print('✅ iOS birleşik konum akışı (allowBackgroundLocationUpdates)');
+  }
+
+  /// Konum → API (yalnızca [courier_location_tracking] true iken, tek abonelik).
+  static Future<void> ensureIosCourierApiListener() async {
+    if (kIsWeb || !Platform.isIOS) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (!(prefs.getBool('courier_location_tracking') ?? false)) return;
+    if (prefs.getInt('courier_id') == null) return;
+
+    await ensureIosUnifiedPositionStream();
+
+    if (_iosApiPositionSubscription != null) return;
+
+    _iosApiPositionSubscription = courierPositionBroadcast.listen(
+      (position) async {
+        _iosStreamTickCount++;
+        try {
+          final p = await SharedPreferences.getInstance();
+          final courierId = p.getInt('courier_id');
+          final tracking = p.getBool('courier_location_tracking') ?? false;
+          if (courierId == null || !tracking) return;
+
+          final shouldSend =
+              await _shouldSendLocationByStatus(_iosStreamTickCount);
+          if (!shouldSend) return;
+
+          await _onFreshPosition(position, courierId);
+        } catch (e) {
+          print('❌ iOS konum API işleme hatası: $e');
+        }
+      },
+    );
+    print('✅ iOS konum → API dinleyicisi aktif');
+  }
+
+  static Future<void> stopIosCourierApiListener() async {
+    await _iosApiPositionSubscription?.cancel();
+    _iosApiPositionSubscription = null;
+    _iosStreamTickCount = 0;
+  }
+
+  static Future<void> stopIosUnifiedPositionStream() async {
+    await _iosUnifiedPositionSubscription?.cancel();
+    _iosUnifiedPositionSubscription = null;
+  }
+
+  static Future<void> ensureIosMainIsolateTracking() async {
+    if (kIsWeb || !Platform.isIOS) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (!(prefs.getBool('courier_location_tracking') ?? false)) return;
+    if (prefs.getInt('courier_id') == null) return;
+    await ensureIosCourierApiListener();
+  }
+
+  static Future<void> stopIosMainIsolateTracking() async {
+    await stopIosCourierApiListener();
+    await stopIosUnifiedPositionStream();
+  }
+
+  /// Ön plan + ağ: kuyruk boşaltma; iOS tracking tazeleme
+  static Future<void> onApplicationResumed() async {
+    if (kIsWeb) return;
+    final prefs = await SharedPreferences.getInstance();
+    final courierId = prefs.getInt('courier_id');
+    if (courierId == null) return;
+    if (Platform.isIOS) {
+      await _hydrateSharedLastSentFromNative();
+      await _mergeNativePendingIntoFlutterQueue();
+    }
+    await _processLocationQueue(courierId);
+    if (Platform.isIOS) {
+      await ensureIosMainIsolateTracking();
+      if (prefs.getBool('courier_location_tracking') ?? false) {
+        await NativeLocationBridge.setIosTrackingState(
+          enabled: true,
+          courierId: courierId,
+          apiToken: prefs.getString('location_api_token'),
+        );
+      }
+    }
+  }
+
+  static Future<void> _hydrateSharedLastSentFromNative() async {
+    if (kIsWeb || !Platform.isIOS) return;
+    final m = await NativeLocationBridge.getSharedLastSent();
+    if (m == null) return;
+    final lat = m['lat'];
+    final lon = m['lon'];
+    if (lat != null && lon != null) {
+      _lastSentLatitude = lat;
+      _lastSentLongitude = lon;
+    }
+  }
+
+  static Future<void> _mergeNativePendingIntoFlutterQueue() async {
+    if (kIsWeb || !Platform.isIOS) return;
+    final raw = await NativeLocationBridge.drainNativePendingQueueRaw();
+    if (raw == null || raw.isEmpty || raw == '[]') return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List || decoded.isEmpty) return;
+      var existing = await _readPersistentQueue();
+      for (final e in decoded) {
+        if (e is Map) {
+          existing.add(Map<String, dynamic>.from(e));
+        }
+      }
+      while (existing.length > _maxQueueSize) {
+        existing.removeAt(0);
+      }
+      await _writePersistentQueue(existing);
+    } catch (_) {}
+  }
+
+  static Future<List<Map<String, dynamic>>> _readPersistentQueue() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pendingQueuePrefsKey);
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return [];
+      return decoded
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> _writePersistentQueue(List<Map<String, dynamic>> items) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (items.isEmpty) {
+      await prefs.remove(_pendingQueuePrefsKey);
+      return;
+    }
+    await prefs.setString(_pendingQueuePrefsKey, jsonEncode(items));
+  }
+
+  static Future<void> _enqueuePersistentFailedLocation({
+    required double latitude,
+    required double longitude,
+    required double? speedKmh,
+    required int timestamp,
+  }) async {
+    var list = await _readPersistentQueue();
+    while (list.length >= _maxQueueSize) {
+      list.removeAt(0);
+    }
+    list.add({
+      'latitude': latitude,
+      'longitude': longitude,
+      'speedKmh': speedKmh,
+      'timestamp': timestamp,
+    });
+    await _writePersistentQueue(list);
   }
 
   /// ⭐ Kurye durumuna göre konum gönderilmeli mi?
@@ -477,8 +717,6 @@ class LocationService {
     }
   }
 
-  /// 🔄 RETRY MEKANIZMASI - API hatası durumunda tekrar dene
-  /// ⭐ React Native service.js sendLocationWithRetry karşılığı
   static Future<bool> _sendLocationWithRetry({
     required double latitude,
     required double longitude,
@@ -486,104 +724,62 @@ class LocationService {
     double? speedKmh,
     int maxRetries = 3,
   }) async {
-    print('🌐 API isteği hazırlanıyor...');
-    print('   Endpoint: $_apiUrl');
-    print('   Kurye ID: $courierId');
-    print('   Konum: ($latitude, $longitude)');
-    if (speedKmh != null) {
-      print('   Hız: ${speedKmh.toStringAsFixed(2)} km/saat');
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    print('🌐 Konum API: $courierId @ ($latitude, $longitude) t=$timestamp');
+
+    final ok = await CourierLocationApi.submitWithRetry(
+      latitude: latitude,
+      longitude: longitude,
+      courierId: courierId,
+      timestampMs: timestamp,
+      speedKmh: speedKmh,
+      maxRetries: maxRetries,
+    );
+
+    if (ok) {
+      _lastLocationUpdate = DateTime.now();
     }
-    
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        // ⭐ Cache bypass için timestamp (React Native'deki gibi)
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        String urlString = '$_apiUrl?x=$latitude&y=$longitude&s_id=$courierId&t=$timestamp';
-        if (speedKmh != null) {
-          urlString += '&km=${speedKmh.toStringAsFixed(2)}';
-        }
-        final url = Uri.parse(urlString);
-
-        print('🌐 [$attempt/$maxRetries] GET isteği gönderiliyor...');
-        print('   URL: $url');
-
-        final response = await http.get(url).timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            print('⏱️ [$attempt/$maxRetries] Timeout - 10 saniye aşıldı');
-            return http.Response('{"error": "timeout"}', 408);
-          },
-        );
-
-        print('📡 [$attempt/$maxRetries] Server yanıtı alındı: ${response.statusCode}');
-
-        if (response.statusCode == 200) {
-          print('✅✅✅ [$attempt/$maxRetries] Konum BAŞARIYLA gönderildi!');
-          print('   Kurye: $courierId');
-          print('   Konum: ($latitude, $longitude)');
-          if (speedKmh != null) {
-            print('   Hız: ${speedKmh.toStringAsFixed(2)} km/saat');
-          }
-          print('   Timestamp: $timestamp');
-          print('📥 Server response: ${response.body}');
-          _lastLocationUpdate = DateTime.now(); // Watchdog güncelle
-          return true;
-        } else {
-          print('⚠️⚠️ [$attempt/$maxRetries] Sunucu hatası: ${response.statusCode}');
-          print('📥 Error response: ${response.body}');
-          
-          if (attempt < maxRetries) {
-            final waitTime = 1000 * (1 << (attempt - 1)); // Exponential backoff (ms)
-            print('⏳ $waitTime ms bekleniyor...');
-            await Future.delayed(Duration(milliseconds: waitTime));
-          }
-        }
-      } catch (e, stackTrace) {
-        print('❌ [$attempt/$maxRetries] Network hatası: $e');
-        print('   Hata tipi: ${e.runtimeType}');
-        if (e is http.ClientException) {
-          print('   ClientException: ${e.message}');
-        }
-        print('   Stack trace: $stackTrace');
-        
-        if (attempt < maxRetries) {
-          final waitTime = 1000 * (1 << (attempt - 1));
-          print('⏳ $waitTime ms bekleniyor...');
-          await Future.delayed(Duration(milliseconds: waitTime));
-        }
-      }
-    }
-    
-    print('❌❌❌ TÜM DENEMELER BAŞARISIZ (${maxRetries}x)');
-    return false; // Tüm denemeler başarısız
+    return ok;
   }
 
-  /// 📤 QUEUE'DEKİ KONUMLARI GÖNDER
+  /// 📤 Kalıcı kuyruktaki konumları sırayla gönder
   static Future<void> _processLocationQueue(int courierId) async {
-    if (_locationQueue.isEmpty) return;
-    
-    print('📤 Queue işleniyor: ${_locationQueue.length} konum bekliyor');
-    
-    final itemsToProcess = List<Map<String, dynamic>>.from(_locationQueue);
-    _locationQueue.clear(); // Queue'yu temizle
-    
-    for (final item in itemsToProcess) {
-      final success = await _sendLocationWithRetry(
-        latitude: item['latitude'],
-        longitude: item['longitude'],
+    var items = await _readPersistentQueue();
+    if (items.isEmpty) return;
+
+    print('📤 Kalıcı kuyruk işleniyor: ${items.length} kayıt');
+
+    final remaining = <Map<String, dynamic>>[];
+    var failed = false;
+    for (final item in items) {
+      if (failed) {
+        remaining.add(item);
+        continue;
+      }
+      final lat = item['latitude'] as num?;
+      final lng = item['longitude'] as num?;
+      final ts = item['timestamp'] as int?;
+      final speed = item['speedKmh'] as double?;
+      if (lat == null || lng == null || ts == null) {
+        continue;
+      }
+
+      final success = await CourierLocationApi.submitWithRetry(
+        latitude: lat.toDouble(),
+        longitude: lng.toDouble(),
         courierId: courierId,
-        speedKmh: item['speedKmh'] as double?,
-        maxRetries: 1, // Queue için 1 deneme yeter
+        timestampMs: ts,
+        speedKmh: speed,
+        maxRetries: 2,
       );
-      
+
       if (!success) {
-        // Tekrar queue'ya ekle (ama max boyutu kontrol et)
-        if (_locationQueue.length < _maxQueueSize) {
-          _locationQueue.add(item);
-        }
-        break; // Birisi başarısız oldu, kalan queue'yu sonra dene
+        failed = true;
+        remaining.add(item);
       }
     }
+
+    await _writePersistentQueue(remaining);
   }
 
   /// 🔄 WATCHDOG BAŞLAT - Servis sağlık kontrolü
@@ -608,136 +804,122 @@ class LocationService {
     _watchdogTimer = null;
   }
 
-  /// Konum al ve API'ye gönder
+  /// [Position] ile filtre + API (Android isolate / iOS ana akış ortak mantık)
+  static Future<void> _onFreshPosition(Position position, int courierId) async {
+    await _processLocationQueue(courierId);
+
+    final latitude = position.latitude;
+    final longitude = position.longitude;
+    final speedKmhRaw = position.speed >= 0 ? position.speed * 3.6 : 0.0;
+    final speedKmh = speedKmhRaw < 3.0 ? 0.0 : speedKmhRaw;
+
+    print('✅ Konum işleniyor: ($latitude, $longitude) acc=${position.accuracy}m');
+
+    bool shouldCheckBackend = false;
+    bool is50mOrMore = false;
+
+    if (_lastSentLatitude != null && _lastSentLongitude != null) {
+      final distance = Geolocator.distanceBetween(
+        _lastSentLatitude!,
+        _lastSentLongitude!,
+        latitude,
+        longitude,
+      );
+
+      if (distance >= 50) {
+        print(
+            '✅ 50m+ hareket: ${distance.toStringAsFixed(1)}m — zaman/backend atlanır');
+        is50mOrMore = true;
+        shouldCheckBackend = false;
+      } else {
+        print(
+            '📍 Son gönderime ${distance.toStringAsFixed(1)}m — backend kontrolü');
+        shouldCheckBackend = true;
+      }
+    } else {
+      print('📍 İlk konum gönderimi');
+      shouldCheckBackend = false;
+      is50mOrMore = true;
+    }
+
+    if (!is50mOrMore && _lastSentTime != null) {
+      final timeSinceLastSend = DateTime.now().difference(_lastSentTime!);
+      if (timeSinceLastSend < _minTimeBetweenSends) {
+        print(
+            '⏭️ SKIP: ${timeSinceLastSend.inSeconds}s < ${_minTimeBetweenSends.inSeconds}s');
+        return;
+      }
+    }
+
+    if (shouldCheckBackend) {
+      final shouldSkip = await _shouldSkipLocationSend(courierId);
+      if (shouldSkip) {
+        print('⏭️ SKIP: backend son 3 dk içinde güncel');
+        return;
+      }
+    }
+
+    final success = await _sendLocationWithRetry(
+      latitude: latitude,
+      longitude: longitude,
+      courierId: courierId,
+      speedKmh: speedKmh,
+    );
+
+    if (success) {
+      _lastSentLatitude = latitude;
+      _lastSentLongitude = longitude;
+      _lastSentTime = DateTime.now();
+      print('💾 Son gönderilen konum kaydedildi: ($latitude, $longitude)');
+      if (!kIsWeb && Platform.isIOS) {
+        final ts = DateTime.now().millisecondsSinceEpoch;
+        unawaited(
+          NativeLocationBridge.syncLastSentToNative(
+            latitude: latitude,
+            longitude: longitude,
+            timestampMs: ts,
+          ),
+        );
+      }
+    } else {
+      print('📦 Konum kalıcı kuyruğa (ağ/sunucu hatası)');
+      await _enqueuePersistentFailedLocation(
+        latitude: latitude,
+        longitude: longitude,
+        speedKmh: speedKmh,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+    }
+  }
+
+  /// Konum al ve API'ye gönder (Android arka plan isolate)
   static Future<void> _sendLocation() async {
     try {
-      print('🔄 _sendLocation() başladı - ${DateTime.now()}');
-      
+      print('🔄 _sendLocation() — ${DateTime.now()}');
+
       final prefs = await SharedPreferences.getInstance();
       final courierId = prefs.getInt('courier_id');
 
       if (courierId == null) {
-        print('❌ Courier ID bulunamadı - SharedPreferences boş');
+        print('❌ Courier ID yok');
         return;
       }
 
-      print('✅ Courier ID: $courierId');
-
-      // 📤 Önce queue'daki konumları göndermeyi dene
       await _processLocationQueue(courierId);
 
-      // Konum al
-      print('📍 Konum alınıyor...');
-      Position position = await Geolocator.getCurrentPosition(
+      print('📍 getCurrentPosition (Android isolate)...');
+      final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 50, // 💰 50 metre distance filter - Fatura optimizasyonu
+          distanceFilter: 50,
         ),
       );
 
-      final latitude = position.latitude;
-      final longitude = position.longitude;
-      // Hızı m/s'den km/saat'e çevir (m/s * 3.6 = km/saat)
-      // ⚠️ GPS hata toleransı: 3 km/h altındaki hızlar 0 olarak kabul edilir (durdurulmuş cihaz)
-      final speedKmhRaw = position.speed >= 0 ? position.speed * 3.6 : 0.0;
-      final speedKmh = speedKmhRaw < 3.0 ? 0.0 : speedKmhRaw; // 3 km/h eşik değeri
-
-      print('✅ Konum alındı: ($latitude, $longitude)');
-      print('   Accuracy: ${position.accuracy}m');
-      print('   Speed: ${position.speed}m/s (${speedKmh.toStringAsFixed(2)} km/saat)');
-
-      // 📍 50 METRE KONTROLÜ - ÖNCE MESAFE KONTROLÜ (Zaman filtresinden önce!)
-      bool shouldCheckBackend = false;
-      bool is50mOrMore = false; // 50m üzeri hareket var mı?
-      
-      if (_lastSentLatitude != null && _lastSentLongitude != null) {
-        final distance = Geolocator.distanceBetween(
-          _lastSentLatitude!,
-          _lastSentLongitude!,
-          latitude,
-          longitude,
-        );
-        
-        if (distance >= 50) {
-          // ⚡ 50 METRE ÜZERİ - Zaman filtresini atla, direkt gönder!
-          print('✅ 50 metre limit aşıldı: ${distance.toStringAsFixed(1)}m uzakta - Zaman filtresi atlanıyor, direkt gönderilecek');
-          is50mOrMore = true;
-          shouldCheckBackend = false; // Backend kontrolüne gerek yok
-        } else {
-          print('📍 50 metre kontrolü: Son gönderilen konumdan ${distance.toStringAsFixed(1)}m uzakta (50m limit altında)');
-          shouldCheckBackend = true; // 50m altındaysa backend kontrolü yap
-        }
-      } else {
-        // İlk konum gönderimi, direkt gönder (zaman filtresi yok)
-        print('📍 İlk konum gönderimi, direkt gönderilecek');
-        shouldCheckBackend = false;
-        is50mOrMore = true; // İlk gönderimde zaman filtresi yok
-      }
-
-      // ⏰ ZAMAN BAZLI FİLTRE - Sadece 50m altındaysa kontrol et
-      // ⚡ 50m üzeri hareket varsa zaman filtresi atlanır!
-      if (!is50mOrMore && _lastSentTime != null) {
-        final timeSinceLastSend = DateTime.now().difference(_lastSentTime!);
-        if (timeSinceLastSend < _minTimeBetweenSends) {
-          print('⏭️ SKIP: Son gönderimden ${timeSinceLastSend.inSeconds} sn geçti (25 sn minimum limit)');
-          return;
-        }
-      }
-
-      // ⏰ BACKEND KONTROLÜ (3 dakika içinde gönderilmiş mi?)
-      // Sadece 50m altındaysa backend kontrolü yap
-      if (shouldCheckBackend) {
-        final shouldSkip = await _shouldSkipLocationSend(courierId);
-        
-        if (shouldSkip) {
-          print('⏭️ SKIP: Backend kontrolü - Son 3 dakikada konum gönderilmiş');
-          return;
-        } else {
-          print('✅ Backend kontrolü: Son 3 dakikada konum gönderilmemiş, gönderilecek');
-        }
-      }
-
-      // 🔄 Retry mekanizması ile gönder
-      final success = await _sendLocationWithRetry(
-        latitude: latitude,
-        longitude: longitude,
-        courierId: courierId,
-        speedKmh: speedKmh,
-      );
-
-      if (success) {
-        // ✅ Başarılı - Son gönderilen konumu ve zamanı kaydet
-        _lastSentLatitude = latitude;
-        _lastSentLongitude = longitude;
-        _lastSentTime = DateTime.now(); // Son gönderim zamanını kaydet
-        print('💾 Son gönderilen konum kaydedildi: ($latitude, $longitude) - $_lastSentTime');
-      } else {
-        // ❌ Başarısız - Queue'ya ekle
-        print('📦 Konum queue\'ya ekleniyor (offline)');
-        if (_locationQueue.length < _maxQueueSize) {
-          _locationQueue.add({
-            'latitude': latitude,
-            'longitude': longitude,
-            'speedKmh': speedKmh,
-            'timestamp': DateTime.now().millisecondsSinceEpoch,
-          });
-          print('📦 Queue boyutu: ${_locationQueue.length}');
-        } else {
-          print('⚠️ Queue dolu! En eski konum siliniyor');
-          _locationQueue.removeAt(0);
-          _locationQueue.add({
-            'latitude': latitude,
-            'longitude': longitude,
-            'speedKmh': speedKmh,
-            'timestamp': DateTime.now().millisecondsSinceEpoch,
-          });
-        }
-      }
+      await _onFreshPosition(position, courierId);
     } catch (e) {
-      print('❌❌❌ Konum gönderme HATASI: $e');
-      print('   Hata tipi: ${e.runtimeType}');
+      print('❌ Konum gönderme HATASI: $e');
       if (e is Error) {
-        print('   Stack trace: ${e.stackTrace}');
+        print('   Stack: ${e.stackTrace}');
       }
     }
   }
@@ -776,34 +958,36 @@ class LocationService {
 
     print('✅ Foreground konum izni verildi');
 
-    // 3. ⭐ KRİTİK: Background (arka plan) konum izni (Android 10+)
+    // 3. Arka plan: Android 10+ ve iOS "Always" — kurye takibi için zorunlu
     if (permission != LocationPermission.always) {
-      print('⚠️⚠️ ARKA PLAN konum izni YOK!');
-      print('   Permission: $permission (always olmalı)');
-      
-      // Permission handler ile background location iste
+      print('⚠️ Konum henüz "always" değil: $permission');
       try {
         final bgStatus = await Permission.locationAlways.status;
-        print('📍 Background izin durumu: $bgStatus');
-        
+        print('📍 locationAlways durumu: $bgStatus');
+
         if (!bgStatus.isGranted) {
-          print('⏳ Background izni isteniyor...');
+          print('⏳ locationAlways isteniyor...');
           final result = await Permission.locationAlways.request();
-          print('📍 Background izin sonucu: $result');
-          
+          print('📍 locationAlways sonuç: $result');
+
           if (!result.isGranted) {
-            print('⚠️⚠️ BACKGROUND İZNİ VERİLMEDİ!');
-            print('   Kullanıcı ayarlardan "Her zaman izin ver" seçmeli');
-            return false;
+            print('⚠️ "Her zaman" verilmedi — iOS arka planda konum çalışmaz');
+            if (!kIsWeb && Platform.isIOS) {
+              return false;
+            }
+            if (!kIsWeb && Platform.isAndroid) {
+              return false;
+            }
           }
         }
-        
-        print('✅✅ Background konum izni verildi!');
+
+        permission = await Geolocator.checkPermission();
+        print('📍 Geolocator (always sonrası): $permission');
       } catch (e) {
-        print('❌ Background izin kontrolü hatası: $e');
+        print('❌ locationAlways hatası: $e');
       }
     } else {
-      print('✅✅ Background konum izni zaten var!');
+      print('✅ Konum izni: always');
     }
 
     // 4. Notification izni (Android 13+)
@@ -815,6 +999,15 @@ class LocationService {
       }
     } catch (e) {
       print('⚠️ Bildirim izni hatası: $e');
+    }
+
+    if (!kIsWeb && Platform.isIOS) {
+      permission = await Geolocator.checkPermission();
+      if (permission != LocationPermission.always) {
+        print(
+            '❌ iOS: Arka plan konumu için "Her Zaman" gerekli, mevcut: $permission');
+        return false;
+      }
     }
 
     print('✅✅✅ TÜM İZİNLER TAMAM');
@@ -851,12 +1044,15 @@ class LocationService {
     }
   }
 
-  /// Konum stream'i (harita için real-time)
+  /// Harita için konum akışı. iOS'ta [courierPositionBroadcast] kullanılır (tek abonelik).
   static Stream<Position> getPositionStream() {
+    if (!kIsWeb && Platform.isIOS) {
+      return courierPositionBroadcast;
+    }
     return Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10, // 10 metre hareket ettiğinde güncelle
+        distanceFilter: 10,
       ),
     );
   }

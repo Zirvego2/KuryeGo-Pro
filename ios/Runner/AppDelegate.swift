@@ -22,12 +22,12 @@ import AVFoundation
     // Firebase başlangıcı – ZirveGo Kurye iOS için eklendi
     FirebaseApp.configure()
     
-    // Audio session yapılandırması - Arka planda ses çalabilmek için
+    // Kısa uygulama içi / bildirim tonları (foreground). UIBackgroundModes audio yok (App Store 2.5.4).
     do {
       let audioSession = AVAudioSession.sharedInstance()
-      try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      try audioSession.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
       try audioSession.setActive(true)
-      print("✅ Audio session yapılandırıldı - Arka plan ses desteği aktif")
+      print("✅ Audio session (ambient) — foreground uyarı sesleri")
     } catch {
       print("❌ Audio session yapılandırma hatası: \(error.localizedDescription)")
     }
@@ -71,7 +71,22 @@ import AVFoundation
     application.registerForRemoteNotifications()
     
     GeneratedPluginRegistrant.register(with: self)
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+    let ok = super.application(application, didFinishLaunchingWithOptions: launchOptions)
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self,
+            let controller = self.window?.rootViewController as? FlutterViewController else {
+        return
+      }
+      LocationWakeManager.shared.configureChannel(messenger: controller.binaryMessenger)
+      LocationWakeManager.shared.bootstrapAfterLaunch()
+    }
+
+    if launchOptions?[UIApplication.LaunchOptionsKey.location] != nil {
+      LocationWakeManager.shared.requestOneShotIfLaunchedForLocation()
+    }
+
+    return ok
   }
   
   // APNS token alındığında Firebase'e kaydet
