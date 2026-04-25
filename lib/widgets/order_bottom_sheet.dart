@@ -617,8 +617,8 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             );
           }
 
-          // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
-          await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
+          // Kurye durumunu tek noktadan uzlaştır (s_stat + s_on_the_way)
+          await FirebaseService.reconcileCourierStatusAfterOrderChange(widget.order.sCourier);
 
           // Platform API çağrısı (Teslim Et - Online)
           if (widget.order.sOrderscr >= 1 && widget.order.sOrderscr <= 4) {

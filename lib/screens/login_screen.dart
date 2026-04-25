@@ -121,30 +121,17 @@ class _LoginScreenState extends State<LoginScreen>
       print('📍 İzin durumu: $hasPermissions');
 
       if (!hasPermissions && mounted) {
-        // İzin verilmedi - Kullanıcıyı uyar ve ayarlara yönlendir
-        final goToSettings = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('⚠️ Konum İzni Gerekli'),
-            content: const Text(
-              'Arka planda konum takibi için "Her zaman izin ver" seçeneğini seçmeniz gerekiyor.\n\nAyarlar → Uygulamalar → ZirveGo → İzinler → Konum → Her zaman izin ver',
+        // İzin verilmedi — kullanıcıyı bilgilendir, ayarlara yönlendirme
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Konum izni verilmedi. Konum takibi için uygulamanın "Her zaman" iznine ihtiyacı var. '
+              'İzni daha sonra telefon Ayarlar > Uygulamalar > ZirveGo > Konum bölümünden verebilirsiniz.',
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('İptal'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Ayarlara Git'),
-              ),
-            ],
+            duration: Duration(seconds: 6),
+            backgroundColor: Colors.orange,
           ),
         );
-
-        if (goToSettings == true) {
-          await LocationService.openAppSettings();
-        }
       }
 
       // 3. 🔔 FCM Token yenile ve Firestore'a kaydet

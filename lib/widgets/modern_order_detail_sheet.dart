@@ -278,6 +278,9 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     try {
       await FirebaseService.acceptOrder(widget.order.docId);
 
+      // Kurye siparişi kabul ettiğinde meşgul statüsüne geç
+      await FirebaseService.updateCourierStatus(widget.order.sCourier, 2);
+
       if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
         unawaited(
           SepettakipStatusService.notifyAssigned(
@@ -747,11 +750,8 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         );
       }
 
-      // ⭐ Kurye durumunu güncelle: Başka aktif siparişi varsa meşgul, yoksa müsait
-      await _updateCourierStatusAfterDelivery(widget.order.sCourier);
-
-      // Kurye için yeni alan: teslim sonrası s_stat=1 sipariş kaldı mı kontrol et
-      await FirebaseService.refreshCourierOnTheWayFromOrders(widget.order.sCourier);
+      // ⭐ Kurye durumunu tek noktadan uzlaştır (s_stat + s_on_the_way)
+      await FirebaseService.reconcileCourierStatusAfterOrderChange(widget.order.sCourier);
 
       if (mounted) {
         _showTopRightNotification('✅ Sipariş teslim edildi!', isSuccess: true);
@@ -842,67 +842,6 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       } catch (e) {
         print('❌ POS entegrasyon API hatası (Teslim Et): $e');
       }
-    }
-  }
-
-  /// ⭐ Teslim sonrası kurye durumunu güncelle
-  /// Başka aktif siparişi varsa meşgul (2), yoksa müsait (1) yap
-  /// 
-  /// ⭐ KRİTİK GUARD: Kurye offline (s_stat=0) ise ASLA güncelleme yapma!
-  /// Bu olmadan: kurye vardiya çıkışı yapsa bile, son siparişi teslim edince
-  /// sistem onu tekrar "müsait" (s_stat=1) olarak işaretler.
-  Future<void> _updateCourierStatusAfterDelivery(int courierId) async {
-    try {
-      print('🔄 Teslim sonrası kurye durumu kontrol ediliyor: courierId=$courierId');
-
-      // ⭐ 1. ÖNCE kuryenin mevcut s_stat'ını oku
-      final courierQuery = await FirebaseFirestore.instance
-          .collection('t_courier')
-          .where('s_id', isEqualTo: courierId)
-          .limit(1)
-          .get();
-
-      if (courierQuery.docs.isEmpty) {
-        print('⚠️ Kurye bulunamadı, durum güncellemesi atlandı: courierId=$courierId');
-        return;
-      }
-
-      final currentStat = (courierQuery.docs.first.data()['s_stat'] as int?) ?? 0;
-
-      // ⭐ 2. GUARD: Kurye offline (vardiya kapalı) ise ASLA yazma
-      if (currentStat == 0) {
-        print('🚫 Kurye offline (s_stat=0) — teslim sonrası durum güncellemesi ATLADIILDI (vardiya kapalı)');
-        return;
-      }
-
-      // ⭐ 3. Kuryenin başka aktif siparişi var mı kontrol et
-      // Aktif sipariş: s_stat in [0, 1, 4] (0=Hazır, 1=Yolda, 4=Hazırlanıyor)
-      // Son 24 saat filtresi: eski/kapatılmamış hayalet siparişlerin kuryeyi meşgul
-      // takmasını önler.
-      final cutoff = Timestamp.fromDate(
-        DateTime.now().subtract(const Duration(hours: 24)),
-      );
-      final activeOrdersQuery = await FirebaseFirestore.instance
-          .collection('t_orders')
-          .where('s_courier', whereIn: [courierId, courierId.toString()])
-          .where('s_stat', whereIn: [0, 1, 4])
-          .where('s_cdate', isGreaterThan: cutoff)
-          .get();
-
-      final activeOrderCount = activeOrdersQuery.docs.length;
-      print('📦 Aktif sipariş sayısı: $activeOrderCount');
-
-      // ⭐ 4. Kurye durumunu belirle
-      final newStatus = activeOrderCount > 0 ? 2 : 1; // 2=Meşgul, 1=Müsait
-
-      // ⭐ 5. Kurye durumunu güncelle
-      await FirebaseService.updateCourierStatus(courierId, newStatus);
-
-      final statusText = newStatus == 2 ? 'Meşgul' : 'Müsait';
-      print('✅ Kurye durumu güncellendi: $statusText (s_stat=$newStatus)');
-    } catch (e) {
-      print('❌ Kurye durumu güncellenirken hata: $e');
-      // Hata durumunda sessizce devam et (kritik değil)
     }
   }
 

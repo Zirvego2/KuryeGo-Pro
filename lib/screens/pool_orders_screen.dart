@@ -372,6 +372,18 @@ class _PoolOrdersScreenState extends State<PoolOrdersScreen> {
                         : fallback;
 
                     final km = double.tryParse(order.sDinstance) ?? 0;
+                    final now = DateTime.now();
+                    // s_cdate yoksa sId microsaniye timestamp olarak dene
+                    DateTime? createdAt = order.sCdate;
+                    if (createdAt == null && order.sId > 1000000000000000) {
+                      try {
+                        createdAt = DateTime.fromMicrosecondsSinceEpoch(order.sId);
+                      } catch (_) {}
+                    }
+                    final elapsedMin = createdAt != null ? now.difference(createdAt).inMinutes : null;
+                    final createdTimeStr = createdAt != null
+                        ? '${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}'
+                        : null;
                     // Ödeme metni: öncelik s_odeme_adi, yoksa ss_paytype map'i
                     final String payText = (order.sOdemeAdi != null && order.sOdemeAdi!.trim().isNotEmpty)
                         ? order.sOdemeAdi!
@@ -434,6 +446,28 @@ class _PoolOrdersScreenState extends State<PoolOrdersScreen> {
                             padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
                             child: Column(
                               children: [
+                                // Müşteri adı
+                                _InfoRow(
+                                  icon: Icons.person_outline_rounded,
+                                  iconColor: _kPrimary,
+                                  label: 'Müşteri',
+                                  value: order.ssFullname.isEmpty ? 'Bilinmiyor' : order.ssFullname,
+                                ),
+                                const SizedBox(height: 8),
+                                // Oluşturulma saati + geçen süre
+                                if (createdTimeStr != null)
+                                  _InfoRow(
+                                    icon: Icons.access_time_rounded,
+                                    iconColor: _kWarning,
+                                    label: 'Saat',
+                                    value: elapsedMin != null
+                                        ? '$createdTimeStr  •  $elapsedMin dk önce'
+                                        : createdTimeStr,
+                                    valueColor: elapsedMin != null && elapsedMin >= 10
+                                        ? _kDanger
+                                        : _kWarning,
+                                  ),
+                                if (createdTimeStr != null) const SizedBox(height: 8),
                                 // Adres
                                 _InfoRow(
                                   icon: Icons.location_on_outlined,

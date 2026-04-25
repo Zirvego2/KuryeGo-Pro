@@ -958,31 +958,37 @@ class LocationService {
 
     print('✅ Foreground konum izni verildi');
 
-    // 3. Arka plan: Android 10+ ve iOS "Always" — kurye takibi için zorunlu
+    // 3. Arka plan izni — Android 10+ için programatik istek, iOS için sadece kontrol
     if (permission != LocationPermission.always) {
       print('⚠️ Konum henüz "always" değil: $permission');
       try {
-        final bgStatus = await Permission.locationAlways.status;
-        print('📍 locationAlways durumu: $bgStatus');
+        if (!kIsWeb && Platform.isAndroid) {
+          // Android: arka plan iznini programatik olarak iste
+          final bgStatus = await Permission.locationAlways.status;
+          print('📍 Android locationAlways durumu: $bgStatus');
 
-        if (!bgStatus.isGranted) {
-          print('⏳ locationAlways isteniyor...');
-          final result = await Permission.locationAlways.request();
-          print('📍 locationAlways sonuç: $result');
+          if (!bgStatus.isGranted) {
+            print('⏳ Android: locationAlways isteniyor...');
+            final result = await Permission.locationAlways.request();
+            print('📍 Android locationAlways sonuç: $result');
 
-          if (!result.isGranted) {
-            print('⚠️ "Her zaman" verilmedi — iOS arka planda konum çalışmaz');
-            if (!kIsWeb && Platform.isIOS) {
-              return false;
-            }
-            if (!kIsWeb && Platform.isAndroid) {
+            if (!result.isGranted) {
+              print('⚠️ Android: "Her zaman" verilmedi');
               return false;
             }
           }
-        }
 
-        permission = await Geolocator.checkPermission();
-        print('📍 Geolocator (always sonrası): $permission');
+          permission = await Geolocator.checkPermission();
+          print('📍 Geolocator (always sonrası): $permission');
+        }
+        // iOS: "Always" iznini programatik olarak isteme — Apple kılavuzu bunu yasaklar.
+        // iOS kullanıcısı "Her Zaman" iznini sistem diyaloğundan veya
+        // Ayarlar > Uygulamalar > ZirveGo > Konum yolundan kendi isteğiyle verebilir.
+        // Uygulama izin akışını sistem diyaloğu dışında yönlendirmez.
+        if (!kIsWeb && Platform.isIOS) {
+          permission = await Geolocator.checkPermission();
+          print('📍 iOS mevcut izin durumu: $permission');
+        }
       } catch (e) {
         print('❌ locationAlways hatası: $e');
       }
@@ -1001,13 +1007,16 @@ class LocationService {
       print('⚠️ Bildirim izni hatası: $e');
     }
 
+    // iOS: "whileInUse" izni de kabul edilebilir — background tracking sınırlı çalışır
+    // Kullanıcıdan zorla "always" istenmez (Apple Guideline 5.1.1 gereği)
     if (!kIsWeb && Platform.isIOS) {
       permission = await Geolocator.checkPermission();
-      if (permission != LocationPermission.always) {
-        print(
-            '❌ iOS: Arka plan konumu için "Her Zaman" gerekli, mevcut: $permission');
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        print('❌ iOS: Konum izni yok');
         return false;
       }
+      print('📍 iOS izin durumu: $permission (whileInUse veya always)');
     }
 
     print('✅✅✅ TÜM İZİNLER TAMAM');

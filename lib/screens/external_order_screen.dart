@@ -38,6 +38,7 @@ class _ExternalOrderScreenState extends State<ExternalOrderScreen> {
   static const String _baseUrl = 'https://zirvego.app';
 
   int? _selectedWorkId;
+  String? _selectedWorkName;
   int? _packageCount;
   String? _reason;
   String _note = '';
@@ -91,6 +92,172 @@ class _ExternalOrderScreenState extends State<ExternalOrderScreen> {
       if (!mounted) return;
       setState(() => _worksLoading = false);
       _showError('İşletmeler yüklenemedi: $e');
+    }
+  }
+
+  /// 150 işletme için arama destekli seçim dialogu
+  Future<void> _showWorkSearchDialog() async {
+    String query = '';
+    List<Map<String, dynamic>> filtered = List.of(_works);
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return Dialog(
+              insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 32),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Başlık
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 8, 12),
+                    decoration: const BoxDecoration(
+                      color: _kPrimary,
+                      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.store_rounded, color: Colors.white, size: 20),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'İşletme Seçin',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                          onPressed: () => Navigator.pop(ctx),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Arama kutusu
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                    child: TextField(
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        hintText: 'İşletme ara...',
+                        hintStyle: const TextStyle(color: _kTextSecondary, fontSize: 14),
+                        prefixIcon: const Icon(Icons.search, color: _kPrimary, size: 20),
+                        suffixIcon: query.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 18, color: _kTextSecondary),
+                                onPressed: () {
+                                  setDialogState(() {
+                                    query = '';
+                                    filtered = List.of(_works);
+                                  });
+                                },
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: _kSurface,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: _kBorder),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: _kBorder),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: _kPrimary, width: 2),
+                        ),
+                      ),
+                      onChanged: (v) {
+                        setDialogState(() {
+                          query = v;
+                          final q = v.toLowerCase();
+                          filtered = _works
+                              .where((w) => (w['name'] as String).toLowerCase().contains(q))
+                              .toList();
+                        });
+                      },
+                    ),
+                  ),
+                  // Sonuç sayısı
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '${filtered.length} işletme',
+                        style: const TextStyle(fontSize: 12, color: _kTextSecondary),
+                      ),
+                    ),
+                  ),
+                  // Liste
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.45,
+                    ),
+                    child: filtered.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Text('Sonuç bulunamadı', style: TextStyle(color: _kTextSecondary)),
+                          )
+                        : ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, __) => const Divider(height: 1, color: _kBorder),
+                            itemBuilder: (_, i) {
+                              final w = filtered[i];
+                              final isSelected = w['id'] == _selectedWorkId;
+                              return InkWell(
+                                onTap: () => Navigator.pop(ctx, w),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  color: isSelected ? _kPrimary.withOpacity(0.07) : null,
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.store_rounded,
+                                        size: 16,
+                                        color: isSelected ? _kPrimary : _kTextSecondary,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          w['name'] as String,
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                                            color: isSelected ? _kPrimary : _kTextPrimary,
+                                          ),
+                                        ),
+                                      ),
+                                      if (isSelected)
+                                        const Icon(Icons.check_circle_rounded, size: 18, color: _kPrimary),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (result != null) {
+      setState(() {
+        _selectedWorkId = result['id'] as int;
+        _selectedWorkName = result['name'] as String;
+      });
     }
   }
 
@@ -318,7 +485,7 @@ class _ExternalOrderScreenState extends State<ExternalOrderScreen> {
                   subtitle: 'Aşağıdaki alanların tamamı zorunludur.',
                   child: Column(
                     children: [
-                      // İşletme
+                      // İşletme — arama destekli seçim
                       _worksLoading
                         ? Container(
                             height: 52,
@@ -334,28 +501,55 @@ class _ExternalOrderScreenState extends State<ExternalOrderScreen> {
                               ),
                             ),
                           )
-                        : DropdownButtonFormField<int>(
-                            decoration: _fieldDecoration(
-                              label: 'İşletme',
-                              hint: 'İşletme seçin',
-                              icon: Icons.store_rounded,
-                            ),
-                            isExpanded: true,
-                            value: _selectedWorkId,
-                            dropdownColor: _kCardBg,
-                            borderRadius: BorderRadius.circular(12),
-                            items: _works
-                                .map((w) => DropdownMenuItem<int>(
-                                      value: w['id'] as int,
-                                      child: Text(
-                                        '${w['name']}',
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 14, color: _kTextPrimary),
+                        : FormField<int>(
+                            initialValue: _selectedWorkId,
+                            validator: (_) => _selectedWorkId == null ? 'İşletme seçin' : null,
+                            builder: (field) => Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                InkWell(
+                                  onTap: _showWorkSearchDialog,
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Container(
+                                    height: 52,
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                                    decoration: BoxDecoration(
+                                      color: _kSurface,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: field.hasError ? Colors.red.shade400 : _kBorder,
+                                        width: 1.5,
                                       ),
-                                    ))
-                                .toList(),
-                            onChanged: (v) => setState(() => _selectedWorkId = v),
-                            validator: (v) => v == null ? 'İşletme seçin' : null,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.store_rounded, color: _kPrimary, size: 20),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            _selectedWorkName ?? 'İşletme seçin',
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              color: _selectedWorkName != null ? _kTextPrimary : _kTextSecondary,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        const Icon(Icons.search, color: _kTextSecondary, size: 20),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                if (field.hasError)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 12, top: 4),
+                                    child: Text(
+                                      field.errorText!,
+                                      style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
                       const SizedBox(height: 12),
 

@@ -30,7 +30,6 @@ import '../widgets/modern_order_card.dart';
 import '../widgets/shift_menu_sheet.dart';
 import '../widgets/route_add_order_popup.dart';
 // import '../widgets/new_order_popup.dart'; // ⭐ Popup sistemi kaldırıldı - Küçük bildirim kullanılıyor
-import '../main.dart';
 import 'login_screen.dart';
 import 'main_profile_screen.dart';
 import 'pool_orders_screen.dart';
@@ -117,18 +116,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _setAppRunningFlag(true); // Uygulama açık
     _initializeApp();
-    
-    // ⭐ Versiyon kontrolü - HomeScreen açıldığında kontrol et (context kesinlikle hazır)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        // Kısa bir gecikme ile versiyon kontrolü yap (ekran tamamen yüklensin)
-        Future.delayed(const Duration(milliseconds: 1000), () {
-          if (mounted) {
-            ZirveGoApp.checkVersionAndShowDialog(context);
-          }
-        });
-      }
-    });
   }
 
   /// Sağ tarafta gizlenebilir hızlı işlemler (Havuz / Sistem Dışı)
@@ -161,18 +148,46 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               InkWell(
                 onTap: () => setState(() => _quickActionsExpanded = !_quickActionsExpanded),
                 customBorder: const CircleBorder(),
-                child: Container(
-                  width: 26,
-                  height: 26,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFE5E7EB),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    _quickActionsExpanded ? Icons.chevron_right : Icons.chevron_left,
-                    size: 18,
-                    color: const Color(0xFF374151),
-                  ),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: 26,
+                      height: 26,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFE5E7EB),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        _quickActionsExpanded ? Icons.chevron_right : Icons.chevron_left,
+                        size: 18,
+                        color: const Color(0xFF374151),
+                      ),
+                    ),
+                    // Panel kapalıyken ve havuzda sipariş varsa badge göster
+                    if (!_quickActionsExpanded && _poolOrderCount > 0)
+                      Positioned(
+                        top: -5,
+                        left: -5,
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                          child: Text(
+                            '$_poolOrderCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
@@ -642,27 +657,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     print('👤 Kullanıcı bilgileri yüklendi: $_userName (Bay: $_bayId)');
   }
 
-  /// Yeni havuz siparişi geldiğinde in-app SnackBar göster
-  /// Sistem bildirimi arka plan servisten gelir — çift bildirim olmaması için buradan gönderilmiyor
+  /// Yeni havuz siparişi geldiğinde badge güncellenir — in-app bildirim kaldırıldı
   Future<void> _showPoolLocalNotification(int count) async {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.inventory_2_outlined, color: Colors.white, size: 18),
-              const SizedBox(width: 8),
-              Text('📦 Havuzda $count sipariş var',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          backgroundColor: Colors.red.shade700,
-          duration: const Duration(seconds: 4),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      );
-    }
+    // Bildirim kaldırıldı; havuz sayısı badge üzerinden takip edilir
   }
 
   /// Havuz sipariş sayımı stream'ini başlat (badge + bildirim)
@@ -1323,11 +1320,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// 📍 Konum Kapalı Uyarısı (Google Play & Apple Store zorunlu)
+  /// 📍 Konum Servisi Kapalı Uyarısı
+  /// Not: Bu dialog yalnızca cihazın GPS/konum servisi tamamen kapalıyken gösterilir.
+  /// Konum izni reddedildiğinde gösterilmez.
   void _showLocationDisabledWarning() {
     showDialog(
       context: context,
-      barrierDismissible: false,
+      barrierDismissible: true,
       builder: (context) => AlertDialog(
         title: const Row(
           children: [
@@ -1335,7 +1334,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             SizedBox(width: 12),
             Expanded(
               child: Text(
-                '🔴 Konum Kapalı',
+                'Konum Servisi Kapalı',
                 style: TextStyle(fontSize: 20, color: Colors.red),
               ),
             ),
@@ -1346,42 +1345,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Sipariş almak için konumunuzun açık olması gerekiyor.',
+              'Sipariş almak için cihazınızın konum servisinin açık olması gerekiyor.',
               style: TextStyle(
-                fontSize: 16,
+                fontSize: 15,
                 fontWeight: FontWeight.bold,
               ),
             ),
-            SizedBox(height: 16),
+            SizedBox(height: 12),
             Text(
-              'Konum servisi kapalı. Lütfen aşağıdaki adımları takip edin:',
+              'Cihazınızın Ayarlar > Gizlilik > Konum Servisleri bölümünden konum servisini açabilirsiniz.',
               style: TextStyle(fontSize: 14),
             ),
-            SizedBox(height: 12),
-            Text('1️⃣ Telefonunuzun konum ayarlarına gidin'),
-            SizedBox(height: 8),
-            Text('2️⃣ Konum servisini AÇIN'),
-            SizedBox(height: 8),
-            Text('3️⃣ Uygulamaya geri dönün'),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('İptal'),
+            child: const Text('Tamam'),
           ),
-          ElevatedButton.icon(
+          TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              // Telefon ayarlarını aç
               await LocationService.openLocationSettings();
             },
-            icon: const Icon(Icons.settings),
-            label: const Text('Ayarlara Git'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-              foregroundColor: Colors.white,
-            ),
+            child: const Text('Konum Ayarlarını Aç'),
           ),
         ],
       ),
@@ -2309,7 +2296,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _showFirstLaunchLocationDialog() async {
     return showDialog(
       context: context,
-      barrierDismissible: false, // Kapatılamaz
+      barrierDismissible: true,
       builder: (context) => AlertDialog(
         title: const Row(
           children: [
@@ -2645,7 +2632,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             duration: const Duration(milliseconds: 220),
             curve: Curves.easeOut,
             top: 312, // biraz daha aşağı
-            right: _quickActionsExpanded ? 0 : -138, // biraz daha sağa
+            right: _quickActionsExpanded ? 0 : -122, // toggle butonu tam görünsün
             child: _buildQuickActionsPanel(),
           ),
 

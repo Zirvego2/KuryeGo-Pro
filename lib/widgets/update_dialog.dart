@@ -6,9 +6,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'dart:io' show Platform;
 
 /// 📱 Güncelleme Dialog Widget'ı
-/// 
+///
 /// Zorunlu veya opsiyonel güncelleme için kullanılır
-class UpdateDialog extends StatelessWidget {
+class UpdateDialog extends StatefulWidget {
   final bool isMandatory;
   final String currentVersion;
   final String latestVersion;
@@ -28,9 +28,16 @@ class UpdateDialog extends StatelessWidget {
     this.directApkUrl,
   });
 
+  @override
+  State<UpdateDialog> createState() => _UpdateDialogState();
+}
+
+class _UpdateDialogState extends State<UpdateDialog> {
+  bool _actionInProgress = false;
+
   /// Firestore’da direkt APK linki varsa mağaza yerine yalnızca dosya indirilir.
   bool get _hasDirectApk {
-    final a = directApkUrl?.trim();
+    final a = widget.directApkUrl?.trim();
     return a != null && a.isNotEmpty;
   }
 
@@ -38,23 +45,23 @@ class UpdateDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     return WillPopScope(
       // Zorunlu güncellemede geri tuşunu devre dışı bırak
-      onWillPop: () async => !isMandatory,
+      onWillPop: () async => !widget.isMandatory,
       child: AlertDialog(
         title: Row(
           children: [
             Icon(
               Icons.system_update,
-              color: isMandatory ? Colors.red : Colors.blue,
+              color: widget.isMandatory ? Colors.red : Colors.blue,
               size: 28,
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                isMandatory ? 'Zorunlu Güncelleme' : 'Yeni Sürüm Mevcut',
+                widget.isMandatory ? 'Zorunlu Güncelleme' : 'Yeni Sürüm Mevcut',
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.bold,
-                  color: isMandatory ? Colors.red : Colors.blue,
+                  color: widget.isMandatory ? Colors.red : Colors.blue,
                 ),
               ),
             ),
@@ -65,9 +72,9 @@ class UpdateDialog extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (updateMessage != null && updateMessage!.isNotEmpty) ...[
+              if (widget.updateMessage != null && widget.updateMessage!.isNotEmpty) ...[
                 Text(
-                  updateMessage!,
+                  widget.updateMessage!,
                   style: const TextStyle(fontSize: 16),
                 ),
                 const SizedBox(height: 16),
@@ -92,7 +99,7 @@ class UpdateDialog extends StatelessWidget {
                           ),
                         ),
                         Text(
-                          currentVersion,
+                          widget.currentVersion,
                           style: const TextStyle(
                             fontSize: 14,
                             color: Colors.grey,
@@ -112,7 +119,7 @@ class UpdateDialog extends StatelessWidget {
                           ),
                         ),
                         Text(
-                          latestVersion,
+                          widget.latestVersion,
                           style: TextStyle(
                             fontSize: 14,
                             color: Colors.green[700],
@@ -124,7 +131,7 @@ class UpdateDialog extends StatelessWidget {
                   ],
                 ),
               ),
-              if (isMandatory) ...[
+              if (widget.isMandatory) ...[
                 const SizedBox(height: 16),
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -154,15 +161,15 @@ class UpdateDialog extends StatelessWidget {
           ),
         ),
         actions: [
-          if (!isMandatory)
+          if (!widget.isMandatory)
             TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: _actionInProgress ? null : () => Navigator.of(context).pop(false),
               child: const Text('Daha Sonra'),
             ),
           ElevatedButton(
-            onPressed: () => _openStore(context),
+            onPressed: _actionInProgress ? null : () => _openStore(context),
             style: ElevatedButton.styleFrom(
-              backgroundColor: isMandatory ? Colors.red : Colors.blue,
+              backgroundColor: widget.isMandatory ? Colors.red : Colors.blue,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             ),
@@ -181,96 +188,102 @@ class UpdateDialog extends StatelessWidget {
   }
 
   Future<void> _openStore(BuildContext context) async {
+    if (_actionInProgress) return;
+    setState(() => _actionInProgress = true);
     try {
       final url = await _getStoreUrl();
       print('📱 Açılacak URL: $url');
-      
+
       // Firebase Storage: .../x.apk?alt=media&token=... — sorgu string'i yüzünden endsWith('.apk') yanlış olur
       final isApkUrl = _isLikelyApkDownloadUrl(url);
-      
+
       final uri = Uri.parse(url);
-      
-      // ⭐ APK linki için özel işlem (Android)
+
+      // ⭐ APK linki (Android): önce tarayıcı — Chrome vb. indirmeyi genelde sorunsuz başlatır.
+      // Android 11+ için AndroidManifest'te VIEW https/http queries gerekir; yoksa hiçbir şey olmazdı.
       if (isApkUrl && Platform.isAndroid) {
-        print('📱 APK linki tespit edildi, Android DownloadManager kullanılıyor...');
-        
-        try {
-          // Android DownloadManager kullan (platform channel)
-          // MainActivity.kt ile aynı olmalı: com.zirvego.kurye/download
-          const platform = MethodChannel('com.zirvego.kurye/download');
-          await platform.invokeMethod('downloadApk', {'url': url});
-          print('📱 ✅ APK indirme başlatıldı (DownloadManager)');
-          
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('APK indirme başlatıldı. Bildirimlerden takip edebilirsiniz.'),
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
-          
-          // Zorunlu güncellemede dialog'u kapat
-          if (isMandatory && context.mounted) {
+        print('📱 APK linki tespit edildi');
+
+        Future<void> finishFlow({required String snackText}) async {
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(snackText), duration: const Duration(seconds: 3)),
+          );
+          if (widget.isMandatory) {
             Navigator.of(context).pop(true);
           }
-          return;
-        } catch (e) {
-          print('❌ DownloadManager hatası: $e');
-          print('📱 Fallback: Tarayıcıda açılıyor...');
-          
-          // Fallback: Tarayıcıda aç
-          try {
-            await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+
+        try {
+          final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+          if (launched) {
             print('📱 ✅ APK linki tarayıcıda açıldı');
-            
-            if (isMandatory && context.mounted) {
-              Navigator.of(context).pop(true);
-            }
-            return;
-          } catch (e2) {
-            print('❌ Tarayıcı açma hatası: $e2');
-            // Son fallback: Kullanıcıya linki göster
-            if (context.mounted) {
-              showDialog(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('APK İndirme'),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('APK dosyasını indirmek için aşağıdaki linki tarayıcınızda açın:'),
-                      const SizedBox(height: 12),
-                      SelectableText(
-                        url,
-                        style: const TextStyle(
-                          color: Colors.blue,
-                          decoration: TextDecoration.underline,
-                        ),
-                      ),
-                    ],
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Tamam'),
-                    ),
-                  ],
-                ),
-              );
-            }
+            await finishFlow(
+              snackText: 'İndirme tarayıcıda başlatıldı. İndirilenler veya bildirimleri kontrol edin.',
+            );
             return;
           }
+        } catch (e) {
+          print('❌ launchUrl (APK): $e');
         }
+
+        try {
+          const platform = MethodChannel('com.zirvego.kurye/download');
+          final method = await platform.invokeMethod<String>('downloadApk', {'url': url});
+          print('📱 ✅ APK: native sonuç = $method');
+          final msg = method == 'download_manager'
+              ? 'APK indirmesi başlatıldı. Bildirim çubuğundan takip edebilirsiniz.'
+              : 'İndirme tarayıcıda açıldı.';
+          await finishFlow(snackText: msg);
+          return;
+        } catch (e) {
+          print('❌ Native APK indirme: $e');
+        }
+
+        try {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          await finishFlow(
+            snackText: 'İndirme tarayıcıda başlatıldı. İndirilenler veya bildirimleri kontrol edin.',
+          );
+          return;
+        } catch (e) {
+          print('❌ Son launchUrl: $e');
+        }
+
+        if (context.mounted) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('APK indirilemedi'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Linki kopyalayıp Chrome veya başka bir tarayıcıda açmayı deneyin. Sunucuda dosya yoksa (404) indirme başlamaz.',
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    url,
+                    style: const TextStyle(color: Colors.blue, decoration: TextDecoration.underline),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Tamam')),
+              ],
+            ),
+          );
+        }
+        return;
       }
-      
+
       // Play Store veya App Store linki için normal işlem
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-        
+
         // Zorunlu güncellemede dialog'u kapat
-        if (isMandatory && context.mounted) {
+        if (widget.isMandatory && context.mounted) {
           Navigator.of(context).pop(true);
         }
       } else {
@@ -295,6 +308,10 @@ class UpdateDialog extends StatelessWidget {
           ),
         );
       }
+    } finally {
+      if (mounted) {
+        setState(() => _actionInProgress = false);
+      }
     }
   }
 
@@ -305,25 +322,25 @@ class UpdateDialog extends StatelessWidget {
     // Platform kontrolü
     if (!kIsWeb) {
       if (Platform.isAndroid) {
-        final apk = directApkUrl?.trim();
+        final apk = widget.directApkUrl?.trim();
         if (apk != null && apk.isNotEmpty) {
           print('📱 ✅ Direkt APK linki kullanılıyor: $apk');
           return apk;
         }
         print('📱 Play Store linki kullanılıyor');
-        final play = playStoreUrl?.trim();
+        final play = widget.playStoreUrl?.trim();
         if (play != null && play.isNotEmpty) return play;
         return 'https://play.google.com/store/apps/details?id=$pkg';
       } else if (Platform.isIOS) {
-        final store = appStoreUrl?.trim();
+        final store = widget.appStoreUrl?.trim();
         if (store != null && store.isNotEmpty) return store;
         return 'https://apps.apple.com/app/id1234567890';
       }
     }
 
-    return directApkUrl?.trim() ??
-        playStoreUrl?.trim() ??
-        appStoreUrl?.trim() ??
+    return widget.directApkUrl?.trim() ??
+        widget.playStoreUrl?.trim() ??
+        widget.appStoreUrl?.trim() ??
         'https://play.google.com/store/apps/details?id=$pkg';
   }
 

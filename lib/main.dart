@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 import 'services/location_service.dart';
 import 'services/notification_service.dart';
 import 'services/version_check_service.dart';
 import 'widgets/update_dialog.dart';
 import 'screens/login_screen.dart';
+import 'screens/onboarding_screen.dart';
 
 final _locationLifecycleBridge = _LocationLifecycleBridge();
 
@@ -23,6 +25,8 @@ class _LocationLifecycleBridge with WidgetsBindingObserver {
   }
 }
 
+late bool _onboardingShown;
+
 void main() async {
   print('🚀 ========================================');
   print('🚀 UYGULAMA BAŞLATILIYOR...');
@@ -30,6 +34,10 @@ void main() async {
   
   WidgetsFlutterBinding.ensureInitialized();
   WidgetsBinding.instance.addObserver(_locationLifecycleBridge);
+
+  // Onboarding daha önce gösterildi mi?
+  final prefs = await SharedPreferences.getInstance();
+  _onboardingShown = prefs.getBool('onboarding_shown') ?? false;
 
   await initializeDateFormatting('tr', null);
 
@@ -95,6 +103,12 @@ class ZirveGoApp extends StatelessWidget {
   // ⭐ Global Navigator Key - Versiyon kontrolü için
   static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
+  /// MaterialApp.builder her rebuild'de çalışır; yalnızca bir kez zamanla.
+  static bool _initialVersionCheckScheduled = false;
+
+  /// Aynı anda birden fazla checkVersionAndShowDialog çağrısını tek Future'da birleştir.
+  static Future<void>? _activeVersionCheck;
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -122,15 +136,22 @@ class ZirveGoApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
       ),
-      home: const LoginScreen(),
+      home: _onboardingShown
+          ? const LoginScreen()
+          : OnboardingScreen(onDone: () {
+              ZirveGoApp.navigatorKey.currentState?.pushReplacement(
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+              );
+            }),
       
-      // ⭐ Versiyon kontrolü - Uygulama açıldığında kontrol et
-      // Not: HomeScreen'de de kontrol ediliyor, burada sadece yedek olarak
+      // ⭐ Versiyon kontrolü — yalnızca ilk frame sonrası bir kez (builder tekrarlarında tekrarlanmaz)
       builder: (context, child) {
-        // Widget tree hazır olduğunda versiyon kontrolü yap (sadece bir kez)
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _checkVersionAfterBuild();
-        });
+        if (!_initialVersionCheckScheduled) {
+          _initialVersionCheckScheduled = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _checkVersionAfterBuild();
+          });
+        }
         return child ?? const SizedBox.shrink();
       },
     );
@@ -152,8 +173,20 @@ class ZirveGoApp extends StatelessWidget {
   }
 
   /// Versiyon kontrolü yap ve gerekirse dialog göster
-  /// Bu metod LoginScreen'den çağrılacak
   static Future<void> checkVersionAndShowDialog(BuildContext context) async {
+    if (_activeVersionCheck != null) {
+      await _activeVersionCheck;
+      return;
+    }
+    _activeVersionCheck = _checkVersionAndShowDialogBody(context);
+    try {
+      await _activeVersionCheck;
+    } finally {
+      _activeVersionCheck = null;
+    }
+  }
+
+  static Future<void> _checkVersionAndShowDialogBody(BuildContext context) async {
     try {
       print('📱 ========================================');
       print('📱 VERSİYON KONTROLÜ BAŞLATILIYOR...');
@@ -212,4 +245,5 @@ class ZirveGoApp extends StatelessWidget {
       // Hata durumunda uygulama çalışmaya devam etsin
     }
   }
+
 }

@@ -246,6 +246,9 @@ class FirebaseService {
       });
 
       print('🚫 Sipariş reddedildi: $orderId (Kurye: $courierId)');
+
+      // Kurye statüsünü gerçek sipariş sayısına göre güncelle
+      await reconcileCourierStatusAfterOrderChange(courierId);
     } catch (e) {
       print('❌ Sipariş red hatası: $e');
       rethrow;
@@ -714,6 +717,79 @@ class FirebaseService {
       await updateCourierOnTheWay(courierId, hasOnTheWayOrder);
     } catch (e) {
       print('❌ s_on_the_way siparişten yenileme hatası: $e');
+    }
+  }
+
+  /// Teslimat/sipariş değişikliği sonrası kurye durumunu tek noktadan uzlaştır.
+  /// - Kurye offline (s_stat=0) ise statüye dokunmaz.
+  /// - Aktif siparişe göre s_stat: 2 (meşgul) / 1 (müsait) belirler.
+  /// - Her durumda s_on_the_way bilgisini siparişlerden yeniden türetir.
+  static Future<void> reconcileCourierStatusAfterOrderChange(int courierId) async {
+    print('🔄 [CourierReconcile] Başladı: courierId=$courierId');
+    try {
+      final courierQuery = await db
+          .collection('t_courier')
+          .where('s_id', whereIn: [courierId, courierId.toString()])
+          .limit(1)
+          .get();
+
+      if (courierQuery.docs.isEmpty) {
+        print('⚠️ [CourierReconcile] Kurye bulunamadı: courierId=$courierId');
+        return;
+      }
+
+      final courierData = courierQuery.docs.first.data();
+      final currentStat = (courierData['s_stat'] as int?) ?? 0;
+
+      if (currentStat == 0 || currentStat == 3 || currentStat == 4) {
+        print('🚫 [CourierReconcile] Statü korunuyor (offline/mola/kaza): courierId=$courierId, s_stat=$currentStat');
+      } else {
+        final cutoff = Timestamp.fromDate(
+          DateTime.now().subtract(const Duration(hours: 24)),
+        );
+
+        // Firestore "at most one 'in' per query" kısıtı nedeniyle s_courier için
+        // whereIn kullanamayız; int ve string türlerini iki ayrı sorguyla sorgula.
+        final q1 = await db
+            .collection('t_orders')
+            .where('s_courier', isEqualTo: courierId)
+            .where('s_stat', whereIn: [0, 1, 4])
+            .where('s_cdate', isGreaterThan: cutoff)
+            .get();
+
+        final q2 = await db
+            .collection('t_orders')
+            .where('s_courier', isEqualTo: courierId.toString())
+            .where('s_stat', whereIn: [0, 1, 4])
+            .where('s_cdate', isGreaterThan: cutoff)
+            .get();
+
+        final activeDocIds = <String>{
+          ...q1.docs.map((d) => d.id),
+          ...q2.docs.map((d) => d.id),
+        };
+        final activeOrderCount = activeDocIds.length;
+        final newStatus = activeOrderCount > 0 ? 2 : 1;
+        print(
+          '📊 [CourierReconcile] Aktif sipariş: $activeOrderCount, mevcut s_stat: $currentStat, hedef s_stat: $newStatus',
+        );
+
+        if (currentStat != newStatus) {
+          await updateCourierStatus(courierId, newStatus);
+          print('✅ [CourierReconcile] s_stat güncellendi: $currentStat -> $newStatus');
+        } else {
+          print('ℹ️ [CourierReconcile] s_stat zaten doğru: $newStatus');
+        }
+      }
+    } catch (e) {
+      print('❌ [CourierReconcile] s_stat uzlaştırma hatası: $e');
+    } finally {
+      try {
+        await refreshCourierOnTheWayFromOrders(courierId);
+        print('✅ [CourierReconcile] s_on_the_way siparişlerden yenilendi');
+      } catch (e) {
+        print('⚠️ [CourierReconcile] s_on_the_way yenileme hatası: $e');
+      }
     }
   }
 
