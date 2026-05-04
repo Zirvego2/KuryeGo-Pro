@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+
+import '../utils/firestore_coercion.dart';
 import 'location_service.dart';
 
 /// 🕐 Profesyonel Vardiya Yönetim Servisi
@@ -109,8 +111,8 @@ class ShiftService {
 
       // 4️⃣ Zaman kontrolü
       final currentMinutes = _getCurrentTimeInMinutes();
-      final startMinutes = todayShift['startMinutes'] as int;
-      final endMinutes = todayShift['endMinutes'] as int;
+      final startMinutes = coerceFirestoreInt(todayShift['startMinutes']);
+      final endMinutes = coerceFirestoreInt(todayShift['endMinutes']);
       final isNightShift = endMinutes < startMinutes;
 
       if (isNightShift) {
@@ -250,8 +252,8 @@ class ShiftService {
 
       // Zaman kontrolü (sadece autoLogout için)
       final currentMinutes = _getCurrentTimeInMinutes();
-      final startMinutes = todayShift['startMinutes'] as int;
-      final endMinutes = todayShift['endMinutes'] as int;
+      final startMinutes = coerceFirestoreInt(todayShift['startMinutes']);
+      final endMinutes = coerceFirestoreInt(todayShift['endMinutes']);
       final isNightShift = endMinutes < startMinutes;
 
       bool shiftTimeEnded = false;
@@ -416,7 +418,7 @@ class ShiftService {
       // Guard: Kurye OFFLINE ise AVAILABLE yapma
       final freshDoc = await courierQuery.docs.first.reference.get();
       final freshData = freshDoc.data() as Map<String, dynamic>? ?? {};
-      final currentStat = freshData['s_stat'] as int? ?? STATUS_OFFLINE;
+      final currentStat = coerceFirestoreInt(freshData['s_stat'], STATUS_OFFLINE);
       if (currentStat == STATUS_OFFLINE) {
         print('ℹ️ Guard: Kurye OFFLINE, endBreak s_stat değiştirilmedi.');
         return {'success': true, 'message': '✅ Mola sonlandırıldı.'};

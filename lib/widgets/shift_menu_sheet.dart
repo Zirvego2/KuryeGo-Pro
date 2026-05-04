@@ -9,6 +9,7 @@ import '../services/shift_log_service.dart';
 import '../services/break_service.dart';
 import '../services/sms_service.dart';
 import '../models/courier_daily_log.dart';
+import '../utils/firestore_coercion.dart';
 
 /// 🕐 Vardiya Yönetim Menüsü
 /// Bottom Sheet olarak gösterilen profesyonel vardiya menüsü
@@ -1146,7 +1147,7 @@ class _ShiftMenuSheetState extends State<ShiftMenuSheet> {
           .get();
 
       if (courierQuery.docs.isNotEmpty) {
-        final freshStat = courierQuery.docs.first.data()['s_stat'] as int? ?? 0;
+        final freshStat = coerceFirestoreInt(courierQuery.docs.first.data()['s_stat']);
         if (freshStat == ShiftService.STATUS_OFFLINE) {
           print('ℹ️ Guard: Kurye offline (s_stat=0), _endEmergency s_stat değiştirilmedi.');
           if (mounted) setState(() => _isProcessing = false);

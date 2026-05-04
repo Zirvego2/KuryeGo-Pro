@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../utils/firestore_coercion.dart';
+
 /// Sipariş modeli (t_orders)
 class OrderModel {
   final String docId;
@@ -60,6 +62,10 @@ class OrderModel {
   final String? sSource; // Kaynak (orn: sepettakip)
   final String? sSepettakipOrderId; // Sepettakip dis siparis id
 
+  // Restoran kendi kuryesi
+  final String? sOwnCourierId;   // t_work_couriers doc ID
+  final String? sOwnCourierName; // Kurye adı
+
   OrderModel({
     required this.docId,
     required this.sId,
@@ -101,6 +107,8 @@ class OrderModel {
     this.paymentMethodText,
     this.sSource,
     this.sSepettakipOrderId,
+    this.sOwnCourierId,
+    this.sOwnCourierName,
   });
 
   /// GeoPoint'i Map'e çevir
@@ -131,22 +139,22 @@ class OrderModel {
       if (value is int) return value.toString();
       return value.toString();
     }
-    
+
     return OrderModel(
       docId: docId,
-      sId: data['s_id'] ?? 0,
-      sBay: data['s_bay'] ?? 0,
-      sWork: data['s_work'] ?? 0,
-      sCourier: data['s_courier'] ?? 0,
-      sStat: data['s_stat'] ?? 0,
-      sOrderscr: data['s_orderscr'] ?? 0,
+      sId: coerceFirestoreInt(data['s_id']),
+      sBay: coerceFirestoreInt(data['s_bay']),
+      sWork: coerceFirestoreInt(data['s_work']),
+      sCourier: coerceFirestoreInt(data['s_courier']),
+      sStat: coerceFirestoreInt(data['s_stat']),
+      sOrderscr: coerceFirestoreInt(data['s_orderscr']),
       sPid: toStringValue(data['s_pid'], ''),
       sOrderid: toStringValue(data['s_orderid'], toStringValue(data['s_pid'], '')),
       sOrganizationToken: toStringValue(data['s_organizationToken'], ''),
       sCdate: data['s_cdate'] != null
           ? (data['s_cdate'] as Timestamp).toDate()
           : null,
-      sReady: data['s_ready'] ?? 0,
+      sReady: coerceFirestoreInt(data['s_ready']),
       sReceived: data['s_received'] != null
           ? (data['s_received'] as Timestamp).toDate()
           : null,
@@ -163,7 +171,7 @@ class OrderModel {
       sPhonework: toStringValue(data['s_phonework'], ''),
       sWorkAdres: toStringValue(data['s_workAdres'], ''),
       ssLocationWork: _parseGeoPoint(data['ss_locationWork']),
-      ssPaytype: data['s_pay']?['ss_paytype'] ?? data['ss_paytype'] ?? 0,
+      ssPaytype: coerceFirestoreInt(data['s_pay']?['ss_paytype'] ?? data['ss_paytype']),
       ssPaycount: (data['s_pay']?['ss_paycount'] ?? data['ss_paycount'] ?? 0).toDouble(),
       sOdemeId: data['s_odeme_id'] is int ? data['s_odeme_id'] : int.tryParse('${data['s_odeme_id'] ?? ''}'),
       sOdemeAdi: data['s_odeme_adi']?.toString(),
@@ -178,7 +186,7 @@ class OrderModel {
       sRejectedAt: data['s_rejected_at'] != null
           ? (data['s_rejected_at'] as Timestamp).toDate()
           : null,
-      sDeliveryType: data['s_delivery_type'] is int ? data['s_delivery_type'] : int.tryParse('${data['s_delivery_type'] ?? ''}') ?? 2,
+      sDeliveryType: coerceFirestoreInt(data['s_delivery_type'], 2),
       clientId: data['ClientId']?.toString(),
       javiPosid: data['JaviPosid']?.toString(),
       paymentMethodId: data['paymentMethodOriginal'] == null
@@ -189,6 +197,8 @@ class OrderModel {
       paymentMethodText: data['paymentMethodOriginal']?['text']?.toString(),
       sSource: data['s_source']?.toString(),
       sSepettakipOrderId: data['s_sepettakip_order_id']?.toString(),
+      sOwnCourierId: data['s_own_courier_id']?.toString(),
+      sOwnCourierName: data['s_own_courier_name']?.toString(),
     );
   }
 }

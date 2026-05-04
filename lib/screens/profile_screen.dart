@@ -12,6 +12,7 @@ import 'leave_plan_screen.dart';
 import 'my_external_orders_screen.dart';
 import 'my_external_orders_report_screen.dart';
 import 'courier_penalty_reward_screen.dart';
+import '../utils/firestore_coercion.dart';
 
 /// 👤 Profil & Ayarlar Ekranı
 class ProfileScreen extends StatefulWidget {
@@ -167,7 +168,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _iban = data['s_info']?['ss_iban'] ?? '';
           _plaka = data['s_info']?['ss_plaka'] ?? '';
           _vehicleModel = data['s_info']?['ss_vehicle_model'] ?? 'Motosiklet';
-          _courierStatus = data['s_stat'] ?? 0;
+          _courierStatus = coerceFirestoreInt(data['s_stat']);
         });
 
         // Vardiya bilgilerini çek

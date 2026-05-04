@@ -34,6 +34,7 @@ import 'login_screen.dart';
 import 'main_profile_screen.dart';
 import 'pool_orders_screen.dart';
 import '../utils/initial_media_permissions.dart';
+import '../utils/firestore_coercion.dart';
 
 /// Ana Harita Ekranı
 /// React Native Page_Home.js karşılığı
@@ -51,6 +52,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<OrderModel> _orders = [];
   List<OrderModel> _filteredOrders = [];
   int? _courierId;
+  String _courierType = 'main'; // 'main' veya 'own'
+  String _ownCourierDocId = '';
   bool _isLoading = true;
   String _selectedFilter = 'waiting'; // all, waiting, onroad
   bool _quickActionsExpanded = false; // Sağ panel: Havuz / Sistem Dışı
@@ -326,6 +329,34 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _initializeApp() async {
     final prefs = await SharedPreferences.getInstance();
+    _courierType = prefs.getString('courier_type') ?? 'main';
+
+    // Restoran kuryesi akışı — konum/vardiya/status gerekmez
+    if (_courierType == 'own') {
+      _ownCourierDocId = prefs.getString('own_courier_doc_id') ?? '';
+      if (_ownCourierDocId.isEmpty) {
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const LoginScreen()),
+          );
+        }
+        return;
+      }
+      _userName = prefs.getString('courier_name') ?? '';
+      _ordersSubscription =
+          FirebaseService.watchOwnCourierOrders(_ownCourierDocId).listen(
+        (orders) => _handleOrdersUpdate(orders),
+        onError: (error) =>
+            print('❌ Restoran kurye sipariş stream hatası: $error'),
+      );
+      // Konum izinlerini al ve haritada göster (Firestore'a yazmadan, sadece lokal)
+      await LocationService.initialize();
+      unawaited(_startLocationTracking());
+      unawaited(_ensureInitialLocationReady());
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
+
     _courierId = prefs.getInt('courier_id');
 
     if (_courierId == null) {
@@ -453,7 +484,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             // İlk yüklemede: Tüm siparişlerin stat'lerini kaydet
             for (final orderData in orders) {
               final orderDocId = orderData['docId'] as String;
-              final orderStat = orderData['s_stat'] as int? ?? 0;
+              final orderStat = coerceFirestoreInt(orderData['s_stat']);
               
               // Stat mapping'i kaydet (stat değişikliğini takip etmek için)
               _orderStatusMap[orderDocId] = orderStat;
@@ -486,7 +517,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         // ⭐ Stat değişikliklerini kontrol et - Eğer stat=1'den stat=0'a düştüyse (kurye değişti), popup açılabilir
         for (final orderData in orders) {
           final orderDocId = orderData['docId'] as String;
-          final orderStat = orderData['s_stat'] as int? ?? 0;
+          final orderStat = coerceFirestoreInt(orderData['s_stat']);
           final previousStat = _orderStatusMap[orderDocId];
           
           // Stat değişikliğini kaydet
@@ -533,7 +564,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         // ⭐ Yeni sipariş tespiti: Henüz gösterilmemiş ve stat=0 (hazır/alınacak) veya stat=4 (hazırlanıyor) olan siparişler
         for (final orderData in orders) {
           final orderDocId = orderData['docId'] as String;
-          final orderStat = orderData['s_stat'] as int? ?? 0;
+          final orderStat = coerceFirestoreInt(orderData['s_stat']);
           
           // ⭐ Stat=0 (hazır/alınacak) veya stat=4 (hazırlanıyor) olan siparişler için bildirim göster
           // Kontroller:
@@ -756,9 +787,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       
       for (var doc in workQuery.docs) {
         final data = doc.data();
-        final workId = data['s_id'] as int?;
-        
-        if (workId == null) continue;
+        if (data['s_id'] == null) continue;
+        final workId = coerceFirestoreInt(data['s_id']);
         
         // Konum bilgisini al
         final sLoc = data['s_loc'];
@@ -815,11 +845,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         
         for (var doc in snapshot.docs) {
           final data = doc.data();
-          final sCourier = data['s_courier'] as int? ?? 0;
+          final sCourier = coerceFirestoreInt(data['s_courier']);
           
           // ⭐ Sadece kuryeye atanmamış siparişleri say (s_courier == 0)
           if (sCourier == 0) {
-            final restaurantId = data['s_work'] as int? ?? 0;
+            final restaurantId = coerceFirestoreInt(data['s_work']);
             if (restaurantId > 0 && _restaurants.containsKey(restaurantId)) {
               _restaurantOrderCounts[restaurantId] = (_restaurantOrderCounts[restaurantId] ?? 0) + 1;
             }
@@ -1281,7 +1311,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         return;
       }
 
-      final courierStatus = courierDoc.docs.first.data()['s_stat'] ?? 0;
+      final courierStatus = coerceFirestoreInt(courierDoc.docs.first.data()['s_stat']);
       print('👤 Kurye Durumu: $courierStatus');
       print('   0=Çalışmıyor, 1=Müsait, 2=Meşgul, 3=Mola, 4=Kaza');
 
@@ -2263,6 +2293,49 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   /// Ana profil sayfasını aç
   Future<void> _openProfileMenu() async {
+    // Restoran kuryesi için ana profil ekranı yerine bilgi dialogu göster
+    if (_courierType == 'own') {
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Kurye Bilgisi'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Ad: $_userName'),
+              const SizedBox(height: 8),
+              const Text('Tür: Restoran Kuryesi'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.remove('courier_type');
+                await prefs.remove('own_courier_doc_id');
+                await prefs.remove('courier_name');
+                await prefs.remove('courier_bay');
+                await prefs.remove('own_work_id');
+                if (ctx.mounted) Navigator.of(ctx).pop();
+                if (mounted) {
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  );
+                }
+              },
+              child: const Text('Çıkış Yap', style: TextStyle(color: Colors.red)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Kapat'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     // Profil sayfasından döndükten sonra ayarları yeniden yükle
     await Navigator.push(
       context,

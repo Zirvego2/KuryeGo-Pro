@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../services/firebase_service.dart';
+import '../utils/firestore_coercion.dart';
 import '../utils/restaurant_pricing_fee.dart';
 
 /// 💰 Finans & Mutabakat Ekranı (YENİ VERSİYON)
@@ -134,7 +135,7 @@ class _FinanceScreenState extends State<FinanceScreen> {
 
         // Ödeme türü
         final sPay = data['s_pay'] as Map<String, dynamic>?;
-        final payType = sPay?['ss_paytype'] as int? ?? 0;
+        final payType = coerceFirestoreInt(sPay?['ss_paytype']);
         final customerAmount = (sPay?['ss_paycount'] ?? 0).toDouble();
 
         // Ödeme türüne göre topla

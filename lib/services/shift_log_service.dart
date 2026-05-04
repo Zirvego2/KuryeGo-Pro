@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../models/courier_daily_log.dart';
+import '../utils/firestore_coercion.dart';
 import 'break_service.dart';
 import 'shift_service.dart';
 import 'location_service.dart';
@@ -64,7 +66,7 @@ class ShiftLogService {
       }
 
       final courierDocRef = courierQuery.docs.first.reference;
-      final oldStatus = courierQuery.docs.first.data()['s_stat'] as int? ?? 0;
+      final oldStatus = coerceFirestoreInt(courierQuery.docs.first.data()['s_stat']);
 
       // ⭐ 5. ÖNCE vardiya logu oluştur (s_stat güncellemeden önce!)
       // Bu sayede log oluşturulduktan sonra s_stat güncellenir ve race condition önlenir
@@ -110,7 +112,7 @@ class ShiftLogService {
       // Bu, endShift() ve startShift() arasındaki race condition'ı önler.
       try {
         final freshCourierDoc = await courierDocRef.get();
-        final freshStat = freshCourierDoc.data()?['s_stat'] as int? ?? 0;
+        final freshStat = coerceFirestoreInt(freshCourierDoc.data()?['s_stat']);
         if (freshStat != 0 && freshStat != 1) {
           // Kurye farklı bir durumda (örn: başka bir startShift tamamladı)
           print('⚠️ Race condition algılandı: s_stat zaten $freshStat - yeni log siliniyor');
@@ -159,7 +161,7 @@ class ShiftLogService {
             .get();
         
         if (courierQuery.docs.isNotEmpty) {
-          final currentStatus = courierQuery.docs.first.data()['s_stat'] as int? ?? 0;
+          final currentStatus = coerceFirestoreInt(courierQuery.docs.first.data()['s_stat']);
           // Eğer s_stat = 1 ise (vardiya açık), geri al
           if (currentStatus == 1) {
             await courierQuery.docs.first.reference.update({
@@ -223,7 +225,7 @@ class ShiftLogService {
       }
 
       final courierData = courierQuery.docs.first.data();
-      final courierStatus = courierData['s_stat'] as int? ?? 0;
+      final courierStatus = coerceFirestoreInt(courierData['s_stat']);
 
       // ⭐ Eğer zaten OFFLINE ise, vardiya zaten kapalı
       if (courierStatus == 0) {
@@ -349,7 +351,7 @@ class ShiftLogService {
             .get();
         
         if (courierQuery.docs.isNotEmpty) {
-          final currentStatus = courierQuery.docs.first.data()['s_stat'] as int? ?? 0;
+          final currentStatus = coerceFirestoreInt(courierQuery.docs.first.data()['s_stat']);
           // Eğer s_stat = 0 ise (vardiya kapalı) ama hata oluştu, durumu kontrol et
           // Bu durumda s_stat zaten güncellenmiş olabilir, bu normal
           print('ℹ️ Rollback kontrolü: Mevcut s_stat = $currentStatus');
@@ -386,7 +388,7 @@ class ShiftLogService {
       }
 
       final courierData = courierQuery.docs.first.data();
-      final courierStatus = courierData['s_stat'] as int? ?? 0;
+      final courierStatus = coerceFirestoreInt(courierData['s_stat']);
       
       // ⭐ KRİTİK: Vardiya durumu tamamen s_stat'a bağlı!
       // Eğer kurye statüsü OFFLINE (0) ise, vardiya kapalı demektir
@@ -783,8 +785,8 @@ class ShiftLogService {
         'hasShift': todayShiftTimes['hasShift'] as bool,
         'startTime': todayShiftTimes['startTime'] as String? ?? "00:00", // ⭐ Null ise 00:00 döndür
         'endTime': todayShiftTimes['endTime'] as String? ?? "00:00", // ⭐ Null ise 00:00 döndür
-        'startMinutes': todayShiftTimes['startMinutes'] as int?,
-        'endMinutes': todayShiftTimes['endMinutes'] as int?,
+        'startMinutes': coerceFirestoreIntOrNull(todayShiftTimes['startMinutes']),
+        'endMinutes': coerceFirestoreIntOrNull(todayShiftTimes['endMinutes']),
       };
     } catch (e) {
       print('❌ Bugünün vardiya bilgisi alma hatası: $e');

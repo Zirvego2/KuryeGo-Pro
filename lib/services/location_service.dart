@@ -17,6 +17,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_options.dart';
+import '../utils/firestore_coercion.dart';
 import 'courier_location_api.dart';
 import 'native_location_bridge.dart';
 
@@ -557,7 +558,7 @@ class LocationService {
         }
 
         // ⭐ KRİTİK DÜZELTMESİ: s_stat null ise OFFLINE (0) varsay (eskiden 1 idi)
-        _cachedCourierStatus = courierDoc.docs.first.data()['s_stat'] ?? 0;
+        _cachedCourierStatus = coerceFirestoreInt(courierDoc.docs.first.data()['s_stat']);
         _lastStatusCheck = now;
         print('💾 Durum cache\'lendi: $_cachedCourierStatus');
       } else {
@@ -1177,9 +1178,9 @@ class LocationService {
         // Platform Valesi (s_delivery_type=1) ve yetki dışı siparişleri filtrele
         final orders = snapshot.docs.where((doc) {
           final data = doc.data() as Map<String, dynamic>;
-          if ((data['s_delivery_type'] as int? ?? 0) == 1) return false;
+          if (coerceFirestoreInt(data['s_delivery_type']) == 1) return false;
           if (scope == 'all') return true;
-          final sWork = data['s_work'] as int? ?? 0;
+          final sWork = coerceFirestoreInt(data['s_work']);
           return allowedIds.contains(sWork);
         }).toList();
 

@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'location_service.dart';
+import '../utils/firestore_coercion.dart';
 import '../utils/restaurant_pricing_fee.dart';
 
 /// Firebase Firestore Servisi
@@ -70,61 +73,191 @@ class FirebaseService {
     }
   }
 
+  /// Restoran kuryesi login (t_work_couriers tablosundan)
+  static Future<Map<String, dynamic>?> loginOwnCourier(
+      String phone, String password) async {
+    try {
+      print('🔐 Restoran kurye login denemesi başladı');
+      final querySnapshot = await db
+          .collection('t_work_couriers')
+          .where('s_phone', isEqualTo: phone)
+          .where('s_password', isEqualTo: password)
+          .where('isActive', isEqualTo: true)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        final phoneCheck = await db
+            .collection('t_work_couriers')
+            .where('s_phone', isEqualTo: phone)
+            .get();
+        if (phoneCheck.docs.isEmpty) {
+          print('❌ Bu telefon numarasıyla restoran kuryesi bulunamadı');
+        } else {
+          print('⚠️ Telefon doğru ama şifre yanlış veya kurye pasif');
+        }
+        return null;
+      }
+
+      final d = querySnapshot.docs.first;
+      final userData = Map<String, dynamic>.from(d.data());
+      userData['docId'] = d.id;
+      print('✅ Restoran kurye login başarılı: ${userData['s_name']}');
+      return userData;
+    } catch (e) {
+      print('❌ Restoran kurye login hatası: $e');
+      return null;
+    }
+  }
+
+  /// Firestore'da bazı siparişlerde `s_courier` sayı, bazılarında string saklanıyor.
+  /// Tek sorguda iki `whereIn` kullanılamadığı için iki dinleyici birleştirilir.
+  static int _normalizeOrderStat(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    if (v is double) return v.round();
+    if (v is num) return v.round();
+    return int.tryParse(v.toString()) ?? 0;
+  }
+
+  static List<Map<String, dynamic>> _filterSortWatchOrders(
+      List<Map<String, dynamic>> orders) {
+    final filteredOrders = orders.where((order) {
+      final sStat = _normalizeOrderStat(order['s_stat']);
+      return sStat == 0 || sStat == 1 || sStat == 4;
+    }).toList();
+
+    filteredOrders.sort((a, b) {
+      final aStat = _normalizeOrderStat(a['s_stat']);
+      final bStat = _normalizeOrderStat(b['s_stat']);
+
+      if (aStat != bStat) {
+        final statOrder = {4: 0, 0: 1, 1: 2};
+        final aOrder = statOrder[aStat] ?? 99;
+        final bOrder = statOrder[bStat] ?? 99;
+        if (aOrder != bOrder) {
+          return aOrder.compareTo(bOrder);
+        }
+      }
+
+      final aDate = a['s_cdate'] as Timestamp?;
+      final bDate = b['s_cdate'] as Timestamp?;
+      if (aDate == null || bDate == null) return 0;
+      return bDate.compareTo(aDate);
+    });
+
+    return filteredOrders;
+  }
+
   /// Siparişleri dinle (Real-time)
   /// s_stat: 0 = Hazırlandı (Alınacak), 4 = Hazırlanıyor, 1 = Teslim Alındı (Yolda), 2 = Teslim Edildi, 3 = İptal
   /// NOT: orderBy client-side yapılıyor (Firestore index hazır olana kadar)
   static Stream<List<Map<String, dynamic>>> watchOrders(int courierId) {
-    print('👀 Siparişler dinleniyor: Kurye ID = $courierId');
+    print(
+        '👀 Siparişler dinleniyor: Kurye ID = $courierId (s_courier: int + string)');
 
-    return db
+    final Query<Map<String, dynamic>> qInt = db
         .collection('t_orders')
         .where('s_courier', isEqualTo: courierId)
-        .where('s_stat', whereIn: [0, 1, 4]) // 0=Hazırlandı, 1=Yolda, 4=Hazırlanıyor
-        // TODO: Index hazır olunca uncomment et -> .orderBy('s_cdate', descending: true)
+        .where('s_stat', whereIn: [0, 1, 4]);
+
+    final Query<Map<String, dynamic>> qStr = db
+        .collection('t_orders')
+        .where('s_courier', isEqualTo: courierId.toString())
+        .where('s_stat', whereIn: [0, 1, 4]);
+
+    return Stream<List<Map<String, dynamic>>>.multi((mc) {
+      QuerySnapshot<Map<String, dynamic>>? snapInt;
+      QuerySnapshot<Map<String, dynamic>>? snapStr;
+
+      void emitMerged() {
+        final byId = <String, Map<String, dynamic>>{};
+        void ingest(QuerySnapshot<Map<String, dynamic>>? snap) {
+          if (snap == null) return;
+          for (final doc in snap.docs) {
+            final data = Map<String, dynamic>.from(doc.data());
+            data['docId'] = doc.id;
+            byId[doc.id] = data;
+          }
+        }
+
+        ingest(snapInt);
+        ingest(snapStr);
+
+        final merged = byId.values.toList();
+        print(
+            '📦 Aktif sipariş (birleşik, ham): ${merged.length} — int:${snapInt?.docs.length ?? '—'} string:${snapStr?.docs.length ?? '—'}');
+
+        final sorted = _filterSortWatchOrders(merged);
+        print('📦 Filtrelenmiş aktif sipariş sayısı: ${sorted.length}');
+        mc.add(sorted);
+      }
+
+      final subInt = qInt.snapshots().listen(
+        (s) {
+          snapInt = s;
+          emitMerged();
+        },
+        onError: (Object e, StackTrace st) {
+          print('❌ Sipariş dinleme (s_courier int): $e');
+          mc.addError(e, st);
+        },
+      );
+
+      final subStr = qStr.snapshots().listen(
+        (s) {
+          snapStr = s;
+          emitMerged();
+        },
+        onError: (Object e, StackTrace st) {
+          print('❌ Sipariş dinleme (s_courier string): $e');
+          mc.addError(e, st);
+        },
+      );
+
+      mc.onCancel = () async {
+        await subInt.cancel();
+        await subStr.cancel();
+      };
+    }).handleError((error, _) {
+      print('❌ Sipariş dinleme hatası: $error');
+    });
+  }
+
+  /// Restoran kuryesine atanmış siparişleri dinle (Real-time)
+  static Stream<List<Map<String, dynamic>>> watchOwnCourierOrders(
+      String ownCourierDocId) {
+    print('👀 Restoran kurye siparişleri dinleniyor: docId = $ownCourierDocId');
+    return db
+        .collection('t_orders')
+        .where('s_own_courier_id', isEqualTo: ownCourierDocId)
+        .where('s_stat', whereIn: [0, 1, 4])
         .snapshots()
         .map((snapshot) {
-      print('📦 Aktif sipariş sayısı (filtrelemeden önce): ${snapshot.docs.length}');
-      
       final orders = snapshot.docs.map((doc) {
         final data = doc.data();
         data['docId'] = doc.id;
         return data;
       }).toList();
-      
-      // Filtreleme: s_stat 0, 1 veya 4 olan siparişler (zaten whereIn ile filtrelenmiş)
-      final filteredOrders = orders.where((order) {
-        final sStat = order['s_stat'] as int? ?? 0;
-        return sStat == 0 || sStat == 1 || sStat == 4;
-      }).toList();
-      
-      print('📦 Filtrelenmiş aktif sipariş sayısı: ${filteredOrders.length}');
-      
-      // Client-side sıralama (geçici - index hazır olana kadar)
-      filteredOrders.sort((a, b) {
-        final aStat = a['s_stat'] as int? ?? 0;
-        final bStat = b['s_stat'] as int? ?? 0;
-        
-        // Önce stat'e göre sırala (4=Hazırlanıyor, 0=Hazır, 1=Yolda)
+
+      orders.sort((a, b) {
+        final aStat = _normalizeOrderStat(a['s_stat']);
+        final bStat = _normalizeOrderStat(b['s_stat']);
         if (aStat != bStat) {
-          // 4 (Hazırlanıyor) en önce, sonra 0 (Hazır), sonra 1 (Yolda)
-          final statOrder = {4: 0, 0: 1, 1: 2};
+          const statOrder = {4: 0, 0: 1, 1: 2};
           final aOrder = statOrder[aStat] ?? 99;
           final bOrder = statOrder[bStat] ?? 99;
-          if (aOrder != bOrder) {
-            return aOrder.compareTo(bOrder);
-          }
+          if (aOrder != bOrder) return aOrder.compareTo(bOrder);
         }
-        
-        // Aynı stat ise tarihe göre sırala
         final aDate = a['s_cdate'] as Timestamp?;
         final bDate = b['s_cdate'] as Timestamp?;
         if (aDate == null || bDate == null) return 0;
-        return bDate.compareTo(aDate); // Yeniden eskiye
+        return bDate.compareTo(aDate);
       });
-      
-      return filteredOrders;
+
+      print('📦 Restoran kurye sipariş sayısı: ${orders.length}');
+      return orders;
     }).handleError((error) {
-      print('❌ Sipariş dinleme hatası: $error');
+      print('❌ Restoran kurye sipariş dinleme hatası: $error');
       return <Map<String, dynamic>>[];
     });
   }
@@ -573,9 +706,8 @@ class FirebaseService {
       
       final courierData = snapshot.docs.first.data();
       // ⭐ KRİTİK DÜZELTMESİ: s_stat null ise OFFLINE (0) döndür (eskiden 1 döndürüyordu)
-      // Tip güvenli parse: Firestore'dan int veya String gelebilir
-      final rawStatus = courierData['s_stat'] ?? 0;
-      final status = rawStatus is int ? rawStatus : (int.tryParse(rawStatus.toString()) ?? 0);
+      // int / double / string güvenli (Firestore bazen 4.0 döner)
+      final status = coerceFirestoreInt(courierData['s_stat']);
       print('👤 Kurye statüsü: $status');
       return status;
     }).handleError((error) {
@@ -636,7 +768,7 @@ class FirebaseService {
         // ⭐ Doğrulama: Güncellenmiş değeri oku
         final verifySnapshot = await docRef.get();
         final verifyData = verifySnapshot.data();
-        final verifyStatus = verifyData?['s_stat'] as int?;
+        final verifyStatus = coerceFirestoreInt(verifyData?['s_stat']);
         print('📝 📝 📝 Doğrulama: Güncellenmiş statü = $verifyStatus (beklenen: $status)');
         
         if (verifyStatus == status) {
@@ -644,7 +776,7 @@ class FirebaseService {
         } else {
           print('⚠️ ⚠️ ⚠️ Doğrulama uyarısı: Statü beklenen değerle eşleşmiyor!');
           // ⭐ KRİTİK: Doğrulama başarısızsa tekrar dene (max 2 deneme)
-          if (verifyStatus != null && verifyStatus != status) {
+          if (verifyStatus != status) {
             print('🔄 Doğrulama başarısız, tekrar deniyor...');
             try {
               await docRef.update({
@@ -655,7 +787,7 @@ class FirebaseService {
               // İkinci doğrulama
               final verifySnapshot2 = await docRef.get();
               final verifyData2 = verifySnapshot2.data();
-              final verifyStatus2 = verifyData2?['s_stat'] as int?;
+              final verifyStatus2 = coerceFirestoreInt(verifyData2?['s_stat']);
               
               if (verifyStatus2 == status) {
                 print('✅ ✅ ✅ İkinci deneme başarılı! Statü doğru güncellendi.');
@@ -739,7 +871,7 @@ class FirebaseService {
       }
 
       final courierData = courierQuery.docs.first.data();
-      final currentStat = (courierData['s_stat'] as int?) ?? 0;
+      final currentStat = coerceFirestoreInt(courierData['s_stat']);
 
       if (currentStat == 0 || currentStat == 3 || currentStat == 4) {
         print('🚫 [CourierReconcile] Statü korunuyor (offline/mola/kaza): courierId=$courierId, s_stat=$currentStat');

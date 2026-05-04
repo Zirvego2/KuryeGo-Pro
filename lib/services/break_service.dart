@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../models/courier_daily_log.dart';
+import '../utils/firestore_coercion.dart';
 import 'shift_log_service.dart';
 import 'shift_service.dart';
 import 'location_service.dart';
@@ -45,7 +47,7 @@ class BreakService {
       }
 
       final courierData = courierQuery.docs.first.data();
-      final courierStatus = courierData['s_stat'] as int? ?? 0;
+      final courierStatus = coerceFirestoreInt(courierData['s_stat']);
 
       // ⭐ Eğer zaten BREAK (3) durumundaysa, mola başlatılamaz
       if (courierStatus == ShiftService.STATUS_BREAK) {
@@ -184,7 +186,7 @@ class BreakService {
         // Bu durumda hataya düşmek yerine sadece s_stat'ı 1 (AVAILABLE) yapıp kurtaralım.
         final bugQuery = await _db.collection('t_courier').where('s_id', isEqualTo: courierId).limit(1).get();
         if (bugQuery.docs.isNotEmpty) {
-           final statFix = bugQuery.docs.first.data()['s_stat'] as int? ?? 0;
+           final statFix = coerceFirestoreInt(bugQuery.docs.first.data()['s_stat']);
            if (statFix == ShiftService.STATUS_BREAK) {
              print('🛠️ KENDİNİ ONARMA: Log ACTIVE ama s_stat=3. s_stat=1 yapılıyor...');
              await bugQuery.docs.first.reference.update({'s_stat': ShiftService.STATUS_AVAILABLE});
@@ -273,7 +275,7 @@ class BreakService {
         try {
           final fresh = await courierQuery.docs.first.reference.get();
           final freshData = fresh.data() as Map<String, dynamic>? ?? {};
-          final currentStat = freshData['s_stat'] as int? ?? ShiftService.STATUS_OFFLINE;
+          final currentStat = coerceFirestoreInt(freshData['s_stat'], ShiftService.STATUS_OFFLINE);
           if (currentStat != ShiftService.STATUS_OFFLINE) {
             await courierQuery.docs.first.reference.update({
               's_stat': ShiftService.STATUS_AVAILABLE, // AVAILABLE = 1
