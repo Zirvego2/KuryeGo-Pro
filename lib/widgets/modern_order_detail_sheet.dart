@@ -14,6 +14,8 @@ import '../services/javipos_api_service.dart';
 import '../services/courier_cash_transaction_service.dart';
 import '../services/sepettakip_status_service.dart';
 import '../utils/network_utils.dart';
+import '../utils/zirvego_payment_groups.dart';
+import 'kapida_odeme_turu_picker_dialog.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// 🎨 Modern & Kurumsal Sipariş Detay Sayfası (9. Düzeltme)
@@ -715,14 +717,11 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       final payCash = (sPay?['payCash'] ?? 0).toDouble();
       final cashAmount = payCash > 0 ? payCash : (currentPayType == 0 ? currentPayCount : 0.0);
       
-      await FirebaseFirestore.instance
-          .collection('t_orders')
-          .doc(widget.order.docId)
-          .update({
-        's_stat': 2, // Teslim edildi
-        's_ddate': Timestamp.fromDate(deliveredTime),
-        's_delivered': Timestamp.fromDate(deliveredTime),
-      });
+      await FirebaseService.updateOrderStatus(
+        widget.order.docId,
+        2,
+        deliveredTime: deliveredTime,
+      );
 
       if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
         unawaited(
@@ -750,8 +749,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
         );
       }
 
-      // ⭐ Kurye durumunu tek noktadan uzlaştır (s_stat + s_on_the_way)
-      await FirebaseService.reconcileCourierStatusAfterOrderChange(widget.order.sCourier);
+      // Kurye müsait/meşgul: FirebaseService.updateOrderStatus (teslim) içinde uzlaştırılıyor
 
       if (mounted) {
         _showTopRightNotification('✅ Sipariş teslim edildi!', isSuccess: true);
@@ -883,6 +881,13 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
       text: currentCard.toStringAsFixed(2),
     );
     int? cardPaymentMethod; // null, 1=Pos Cihazı, 2=NFC
+    /// NFC seçildiğinde girilen işlem numarası (siparişe yazılır).
+    String nfcIslemNo = '';
+    int kapidaKartOdemeId = () {
+      final oid = widget.order.sOdemeId;
+      if (oid != null && ZirvegoPaymentGroups.isKKartId(oid)) return oid;
+      return 5;
+    }();
 
     return await showDialog<bool>(
       context: context,
@@ -1013,6 +1018,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                           splitCashController.text = currentTotal.toStringAsFixed(2);
                           splitCardController.text = '0.00';
                           cardPaymentMethod = null;
+                          nfcIslemNo = '';
                         });
                       },
                     ),
@@ -1036,9 +1042,45 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                           splitCashController.text = '0.00';
                           splitCardController.text = currentTotal.toStringAsFixed(2);
                           cardPaymentMethod = null; // Reset card payment method
+                          nfcIslemNo = '';
                         });
                       },
                     ),
+
+                    if (newCard > 0.009) ...[
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final picked = await showKapidaOdemeTuruPickerDialog(
+                            context,
+                            currentId: kapidaKartOdemeId,
+                          );
+                          if (picked != null) {
+                            setDialogState(() => kapidaKartOdemeId = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.tune_rounded, size: 20),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF1D4ED8),
+                          side: const BorderSide(color: Color(0xFFBFDBFE)),
+                          backgroundColor: const Color(0xFFEFF6FF),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        label: Text(
+                          'Ödeme türü: ${ZirvegoPaymentGroups.idToDisplayName[kapidaKartOdemeId] ?? '—'} · Kod ${kapidaKartOdemeId}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
 
                     if (isCashOrCardOrder) ...[
                       const SizedBox(height: 10),
@@ -1145,6 +1187,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                               splitCardController.text = newCard.toStringAsFixed(2);
                               if (newCard <= 0) {
                                 cardPaymentMethod = null;
+                                nfcIslemNo = '';
                               }
                             });
                           },
@@ -1205,6 +1248,7 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                               onTap: () {
                                 setDialogState(() {
                                   cardPaymentMethod = 1;
+                                  nfcIslemNo = '';
                                 });
                               },
                               child: Container(
@@ -1256,11 +1300,11 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                             // NFC ile Ödeme Al
                             InkWell(
                               onTap: () async {
-                                // ⭐ NFC özelliği henüz desteklenmiyor - hata mesajı göster
-                                await _showNfcCardReadingDialog(context);
-                                // Hata mesajından sonra NFC seçimini iptal et
+                                final no = await _showNfcIslemNoDialog(context);
+                                if (no == null || no.trim().isEmpty) return;
                                 setDialogState(() {
-                                  cardPaymentMethod = null;
+                                  cardPaymentMethod = 2;
+                                  nfcIslemNo = no.trim();
                                 });
                               },
                               child: Container(
@@ -1306,6 +1350,48 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                                 ),
                               ),
                             ),
+                            if (cardPaymentMethod == 2 &&
+                                nfcIslemNo.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Padding(
+                                padding: const EdgeInsets.only(left: 4),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.tag_rounded,
+                                      size: 14,
+                                      color: Colors.purple.shade700,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        'İşlem No: $nfcIslemNo',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.purple.shade800,
+                                        ),
+                                      ),
+                                    ),
+                                    TextButton(
+                                      onPressed: () async {
+                                        final no =
+                                            await _showNfcIslemNoDialog(
+                                          context,
+                                          initialIslemNo: nfcIslemNo,
+                                        );
+                                        if (no != null && no.trim().isNotEmpty) {
+                                          setDialogState(() {
+                                            nfcIslemNo = no.trim();
+                                          });
+                                        }
+                                      },
+                                      child: const Text('Düzenle', style: TextStyle(fontSize: 12)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -1386,9 +1472,16 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                       _showTopRightNotification('Lütfen kart ödeme yöntemini seçin (Pos Cihazı veya NFC)');
                       return;
                     }
+
+                    if (cardPaymentMethod == 2 && nfcIslemNo.trim().isEmpty) {
+                      _showTopRightNotification('NFC ödeme için İşlem No girin');
+                      return;
+                    }
                     
-                    // Eğer ödeme değişmişse kaydet
-                    if (selectedPaymentType != currentPaymentType) {
+                    final paymentTypeChanged =
+                        selectedPaymentType != currentPaymentType;
+
+                    if (paymentTypeChanged) {
                       await _savePaymentChange(
                         originalType: currentPaymentType,
                         newType: selectedPaymentType,
@@ -1400,9 +1493,12 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                         newOnline: newOnline,
                         total: currentTotal,
                       );
-                      
-                      // Firestore'da siparişin ödeme bilgisini güncelle
-                      final updateData = {
+                    }
+
+                    final updateData = <String, dynamic>{};
+
+                    if (paymentTypeChanged) {
+                      updateData.addAll({
                         'ss_paytype': selectedPaymentType,
                         'ss_paycount': currentTotal,
                         's_pay.ss_paytype': selectedPaymentType,
@@ -1410,32 +1506,51 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
                         's_pay.payCash': newCash,
                         's_pay.payCard': newCard,
                         's_pay.payOnline': newOnline,
-                      };
-                      
-                      // ⭐ Kart ödeme yöntemi ve tutarı ekle
-                      if ((selectedPaymentType == 1 || (isSplitPayment && newCard > 0)) &&
-                          cardPaymentMethod != null) {
-                        updateData['s_pay.card_payment_method'] = cardPaymentMethod!;
-                        updateData['s_pay.card_payment_amount'] = newCard;
+                      });
+                    }
+
+                    if ((selectedPaymentType == 1 ||
+                            (isSplitPayment && newCard > 0) ||
+                            (selectedPaymentType == 3 && newCard > 0)) &&
+                        cardPaymentMethod != null) {
+                      updateData['s_pay.card_payment_method'] = cardPaymentMethod!;
+                      updateData['s_pay.card_payment_amount'] = newCard;
+                      if (cardPaymentMethod == 2) {
+                        final prefs = await SharedPreferences.getInstance();
+                        final cid =
+                            prefs.getInt('courier_id') ?? widget.order.sCourier;
+                        final cname = prefs.getString('courier_name') ?? '';
+                        updateData['NFCpayment'] = true;
+                        updateData['nfc_kurye_id'] = cid;
+                        updateData['nfc_kurye_adi'] = cname;
+                        updateData['nfc_islem_no'] = nfcIslemNo.trim();
+                      } else {
+                        updateData['NFCpayment'] = false;
+                        updateData['nfc_islem_no'] = FieldValue.delete();
+                        updateData['nfc_kurye_id'] = FieldValue.delete();
+                        updateData['nfc_kurye_adi'] = FieldValue.delete();
                       }
-                      
+                    }
+
+                    final odemeMap =
+                        ZirvegoPaymentGroups.firestoreOdemeFieldsForSsPaytype(
+                      selectedPaymentType,
+                      kKartOdemeId:
+                          (newCard > 0.009) ? kapidaKartOdemeId : null,
+                    );
+                    if (odemeMap != null) {
+                      final applyOdeme = paymentTypeChanged ||
+                          kapidaKartOdemeId != (widget.order.sOdemeId ?? 0);
+                      if (applyOdeme) updateData.addAll(odemeMap);
+                    }
+
+                    if (updateData.isNotEmpty) {
                       await FirebaseFirestore.instance
                           .collection('t_orders')
                           .doc(widget.order.docId)
                           .update(updateData);
-                    } else if ((selectedPaymentType == 1 ||
-                            (isSplitPayment && newCard > 0)) &&
-                        cardPaymentMethod != null) {
-                      // ⭐ Ödeme tipi değişmedi ama kart yöntemi seçildi, sadece kart yöntemini kaydet
-                      await FirebaseFirestore.instance
-                          .collection('t_orders')
-                          .doc(widget.order.docId)
-                          .update({
-                        's_pay.card_payment_method': cardPaymentMethod!,
-                        's_pay.card_payment_amount': newCard,
-                      });
                     }
-                    
+
                     Navigator.pop(context, true);
                   },
                   style: ElevatedButton.styleFrom(
@@ -1454,55 +1569,15 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
     );
   }
 
-  /// 📱 NFC kart okutma dialogu - Hata mesajı göster
-  Future<void> _showNfcCardReadingDialog(BuildContext parentContext) async {
-    return showDialog<void>(
+  /// NFC: işlem numarası girişi
+  Future<String?> _showNfcIslemNoDialog(
+    BuildContext parentContext, {
+    String initialIslemNo = '',
+  }) {
+    return showDialog<String>(
       context: parentContext,
       barrierDismissible: true,
-      builder: (dialogContext) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: Row(
-            children: [
-              Icon(Icons.error_outline, color: Colors.red, size: 28),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'NFC Ödeme Hatası',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          content: const Text(
-            'Kurye Şirketi NFC Özelliği Henüz Tanımlı Değildir.',
-            style: TextStyle(
-              fontSize: 16,
-            ),
-          ),
-          actions: [
-            ElevatedButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
-              ),
-              child: const Text(
-                'Tamam',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ],
-        );
-      },
+      builder: (context) => _NfcIslemNoDialog(initialIslemNo: initialIslemNo),
     );
   }
 
@@ -3562,126 +3637,96 @@ class _ModernOrderDetailSheetState extends State<ModernOrderDetailSheet> {
   }
 }
 
-/// 📱 NFC Kart Okutma Dialog Widget
-class _NfcCardReadingDialog extends StatefulWidget {
+/// NFC işlem no — [TextEditingController] dialog [State] içinde dispose edilir (_dependents hatası önlenir).
+class _NfcIslemNoDialog extends StatefulWidget {
+  const _NfcIslemNoDialog({required this.initialIslemNo});
+
+  final String initialIslemNo;
+
   @override
-  State<_NfcCardReadingDialog> createState() => _NfcCardReadingDialogState();
+  State<_NfcIslemNoDialog> createState() => _NfcIslemNoDialogState();
 }
 
-class _NfcCardReadingDialogState extends State<_NfcCardReadingDialog> {
-  bool _isReading = true;
-  bool _isSuccess = false;
-  
+class _NfcIslemNoDialogState extends State<_NfcIslemNoDialog> {
+  late final TextEditingController _controller;
+
   @override
   void initState() {
     super.initState();
-    // Animasyon başlat - 2 saniye sonra başarılı göster
-    Future.delayed(const Duration(milliseconds: 2000), () {
-      if (mounted) {
-        setState(() {
-          _isReading = false;
-          _isSuccess = true;
-        });
-      }
-    });
+    _controller = TextEditingController(text: widget.initialIslemNo);
   }
-  
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final t = _controller.text.trim();
+    if (t.isEmpty) return;
+    Navigator.pop(context, t);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
       ),
-      contentPadding: const EdgeInsets.all(24),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
+      title: Row(
         children: [
-          // NFC ikonu ve animasyon
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 500),
-            width: 120,
-            height: 120,
-            decoration: BoxDecoration(
-              color: _isReading 
-                  ? Colors.blue.shade100 
-                  : (_isSuccess ? Colors.green.shade100 : Colors.grey.shade100),
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: _isReading 
-                    ? Colors.blue 
-                    : (_isSuccess ? Colors.green : Colors.grey),
-                width: 3,
+          Icon(Icons.nfc_rounded, color: Colors.purple.shade700, size: 28),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'NFC ile ödeme',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
               ),
             ),
-            child: Icon(
-              Icons.nfc,
-              size: 60,
-              color: _isReading 
-                  ? Colors.blue 
-                  : (_isSuccess ? Colors.green : Colors.grey),
-            ),
           ),
-          
-          const SizedBox(height: 24),
-          
-          // Durum mesajı
-          Text(
-            _isReading 
-                ? 'Kart Okunuyor...' 
-                : (_isSuccess ? 'Kart Okundu!' : 'Hata'),
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: _isReading 
-                  ? Colors.blue 
-                  : (_isSuccess ? Colors.green : Colors.red),
-            ),
-          ),
-          
-          const SizedBox(height: 12),
-          
-          Text(
-            _isReading 
-                ? 'Lütfen kartı telefonun arkasına yaklaştırın' 
-                : (_isSuccess ? 'Ödeme başarıyla alındı' : 'Kart okunamadı'),
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey.shade600,
-            ),
-          ),
-          
-          if (_isReading) ...[
-            const SizedBox(height: 24),
-            const CircularProgressIndicator(),
-          ],
-          
-          if (_isSuccess) ...[
-            const SizedBox(height: 24),
-            Icon(
-              Icons.check_circle,
-              size: 48,
-              color: Colors.green,
-            ),
-          ],
         ],
       ),
-      actions: [
-        if (_isSuccess)
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 32,
-                vertical: 12,
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'POS / banka çıktısındaki işlem numarasını girin.',
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _controller,
+              keyboardType: TextInputType.text,
+              textInputAction: TextInputAction.done,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: 'İşlem No',
+                hintText: 'Örn. 240515123456',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                prefixIcon: const Icon(Icons.tag_rounded),
               ),
+              onSubmitted: (_) => _submit(),
             ),
-            child: const Text(
-              'Tamam',
-              style: TextStyle(color: Colors.white),
-            ),
-          ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('İptal'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.check_rounded, size: 20),
+          label: const Text('Kaydet'),
+        ),
       ],
     );
   }

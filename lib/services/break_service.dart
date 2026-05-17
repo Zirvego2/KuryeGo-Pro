@@ -491,21 +491,16 @@ class BreakService {
     }
   }
 
-  /// Anlık mola bilgilerini hesapla
-  /// 
-  /// - Geçen süre: şu an - molaStart (mm:ss formatında)
-  /// - Kalan süre: remainingAtStart - geçen süre (dk/sn formatında)
-  Future<Map<String, dynamic>?> getCurrentBreakInfo(int courierId) async {
+  /// Firestore çağırmaz. [ShiftMenuSheet] saniyelik timer ile UI güncellerken kullanılır (read maliyetini düşürür).
+  Map<String, dynamic>? breakInfoFromLog(CourierDailyLog? activeLog) {
     try {
-      final activeLog = await _shiftLogService.getActiveShift(courierId);
       if (activeLog == null || activeLog.status != 'BREAK') {
         return null;
       }
 
-      // Aktif mola oturumunu bul
       final activeBreakIndex = activeLog.breaks.indexWhere((b) => b.isActive);
       if (activeBreakIndex == -1) {
-        return null; // Aktif mola oturumu yok
+        return null;
       }
       final activeBreak = activeLog.breaks[activeBreakIndex];
 
@@ -515,17 +510,13 @@ class BreakService {
       final elapsedMinutes = elapsed.inMinutes;
       final elapsedSeconds = elapsedTotalSeconds % 60;
 
-      // ⭐ KRİTİK DÜZELTME: Kalan süreyi hesaplarken remainingAtStart kullan (timer ile tutarlı olması için)
-      // Eğer remainingAtStart null veya tutarsızsa, hesaplanan değeri kullan
       int? remainingAtStartRaw = activeBreak.remainingAtStart;
       int remainingAtStart;
-      
-      // ⭐ Güvenlik kontrolü: remainingAtStart null veya tutarsızsa hesapla
+
       if (remainingAtStartRaw == null || remainingAtStartRaw < 0 || remainingAtStartRaw > activeLog.breakAllowedMinutes) {
-        // Hesaplanan değeri kullan (breakAllowedMinutes - breakUsedMinutes)
         final calculatedRemaining = (activeLog.breakAllowedMinutes - activeLog.breakUsedMinutes).clamp(0, double.infinity).toInt();
         remainingAtStart = calculatedRemaining;
-        
+
         if (remainingAtStartRaw == null) {
           print('⚠️ ⚠️ ⚠️ UYARI: remainingAtStart null! Hesaplanan değer kullanılıyor: $remainingAtStart dk');
         } else if (remainingAtStartRaw < 0) {
@@ -536,29 +527,20 @@ class BreakService {
         }
       } else {
         remainingAtStart = remainingAtStartRaw;
-        // ⭐ Doğrulama: remainingAtStart değeri ile hesaplanan değer tutarlı mı?
         final calculatedRemaining = (activeLog.breakAllowedMinutes - activeLog.breakUsedMinutes).clamp(0, double.infinity).toInt();
         if (remainingAtStart != calculatedRemaining) {
           print('⚠️ ⚠️ ⚠️ KRİTİK UYARI: remainingAtStart ($remainingAtStart) != hesaplanan ($calculatedRemaining)!');
           print('   BreakAllowed: ${activeLog.breakAllowedMinutes} dk, BreakUsed: ${activeLog.breakUsedMinutes} dk');
           print('   Bu tutarsizlik timer ve UI\'da yanlis hesaplamalara yol acabilir!');
           print('   ⭐ ÇÖZÜM: Hesaplanan değer kullanılıyor: $calculatedRemaining dk');
-          print('   ⭐ NOT: Timer yanlış değer ile başlatılmış olabilir, ama getCurrentBreakInfo doğru değeri kullanacak');
-          // ⭐ KRİTİK DÜZELTME: Tutarsızlık varsa hesaplanan değeri kullan (breakAllowedMinutes'ı aşmamak için)
-          // ⭐ NOT: Timer zaten başlatılmış ve yanlış değer ile çalışıyor olabilir
-          // Ancak eğer kalan süre 0 veya negatifse, fallback mekanizması devreye girecek
+          print('   ⭐ NOT: Timer yanlış değer ile başlatılmış olabilir, ama breakInfoFromLog doğru değeri kullanacak');
           remainingAtStart = calculatedRemaining;
         }
       }
-      
-      // ⭐ Kalan süre hesapla (remainingAtStart - geçen süre)
-      // ⭐ NOT: remainingAtStart artık doğru değer (tutarsızlık varsa düzeltildi)
+
       final remainingTotalSeconds = (remainingAtStart * 60) - elapsedTotalSeconds;
       final remainingMinutes = (remainingTotalSeconds / 60).floor().clamp(0, double.infinity).toInt();
       final remainingSeconds = (remainingTotalSeconds % 60).clamp(0, 59).toInt();
-
-      // ⭐ Kalan süre 0 veya negatifse, Cloud Function bunu yakında işleyecek (her 1 dk çalışır).
-      // Uygulama tarafında s_stat güncellemesi yapılmıyor, duplicate sorununu önler.
 
       return {
         'elapsedMinutes': elapsedMinutes,
@@ -569,6 +551,17 @@ class BreakService {
         'remainingFormatted': '${remainingMinutes.toString().padLeft(2, '0')}:${remainingSeconds.toString().padLeft(2, '0')}',
         'breakStartAt': activeBreak.startAt,
       };
+    } catch (e) {
+      print('❌ Mola süre hesaplama hatası: $e');
+      return null;
+    }
+  }
+
+  /// Sunucudan güncel log ile mola bilgisi (Firestore read yapar).
+  Future<Map<String, dynamic>?> getCurrentBreakInfo(int courierId) async {
+    try {
+      final activeLog = await _shiftLogService.getActiveShift(courierId);
+      return breakInfoFromLog(activeLog);
     } catch (e) {
       print('❌ Anlık mola bilgisi hatası: $e');
       return null;

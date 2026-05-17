@@ -47,6 +47,9 @@ class LocationService {
   // 💾 CACHE SYSTEM - Firestore read'leri azaltmak için
   static int? _cachedCourierStatus;
   static DateTime? _lastStatusCheck;
+  /// Ana izolattan yazılan `status_cache_invalidated_at` değerinin son işlendiği versiyon
+  /// (`_lastStatusCheck` ile kıyaslamak yarışta kaçırılabiliyordu → bildirimde yanlış MEŞGUL).
+  static int? _lastSeenStatusInvalidateAtMs;
   static const Duration _statusCacheDuration = Duration(minutes: 30); // 30 dakikada bir güncelle
   
   // 📍 SON GÖNDERİLEN KONUM - 50 metre kontrolü için
@@ -222,9 +225,27 @@ class LocationService {
       });
     }
 
+    // Uygulama arka plana geçince pool listener'ı başlat
+    service.on('appPaused').listen((_) {
+      print('📦 appPaused sinyali alındı — background pool listener kontrol ediliyor');
+      _startBackgroundPoolListener();
+    });
+
+    // Uygulama ön plana dönünce pool listener'ı durdur (HomeScreen üstlenir)
+    service.on('appResumed').listen((_) async {
+      print('📦 appResumed sinyali alındı — background pool listener durduruluyor');
+      await _bgPoolSubscription?.cancel();
+      _bgPoolSubscription = null;
+    });
+
     service.on('stop').listen((event) async {
       print('🛑 Stop eventi alındı - Service kapatılıyor');
-      
+
+      // Background pool listener'ı temizle
+      await _bgPoolSubscription?.cancel();
+      _bgPoolSubscription = null;
+      print('🔕 Background pool listener iptal edildi');
+
       // Android notification'ı temizle
       if (service is AndroidServiceInstance) {
         try {
@@ -511,6 +532,9 @@ class LocationService {
     try {
       // SharedPreferences'tan courierId al
       final prefs = await SharedPreferences.getInstance();
+      // ⭐ Ana izolat invalidate yazdığında arka plan yine de eski in-memory cache'i
+      // görebiliyor (Android); diskten tazele — yoksa MEŞGUL önbelleği dakikalarca kalır.
+      await prefs.reload();
       final courierId = prefs.getInt('courier_id');
 
       if (courierId == null) {
@@ -523,16 +547,20 @@ class LocationService {
       final now = DateTime.now();
       
       // Main isolate'ten gelen invalidate sinyalini kontrol et
+      // Not: Eski mantık invalidatedTime.isAfter(_lastStatusCheck) kullanıyordu; teslim sonrası
+      // reconcile ile cache zaman damgası yarışınca sinyal yutulabiliyordu. Yeni invalidate
+      // ms değeri her değiştiğinde (timestamp monoton) tek sefer yenile.
       bool externalInvalidated = false;
       final invalidatedAt = prefs.getInt('status_cache_invalidated_at');
-      if (invalidatedAt != null && _lastStatusCheck != null) {
-        final invalidatedTime = DateTime.fromMillisecondsSinceEpoch(invalidatedAt);
-        if (invalidatedTime.isAfter(_lastStatusCheck!)) {
-          print('🔄 External invalidate sinyali algılandı! Background cache temizleniyor...');
-          _cachedCourierStatus = null;
-          _lastStatusCheck = null;
-          externalInvalidated = true;
-        }
+      if (invalidatedAt != null &&
+          invalidatedAt != _lastSeenStatusInvalidateAtMs) {
+        print(
+          '🔄 External invalidate sinyali algılandı! Background cache temizleniyor... (at=$invalidatedAt)',
+        );
+        _cachedCourierStatus = null;
+        _lastStatusCheck = null;
+        _lastSeenStatusInvalidateAtMs = invalidatedAt;
+        externalInvalidated = true;
       }
       
       final shouldRefreshCache = _lastStatusCheck == null || 
@@ -1090,21 +1118,26 @@ class LocationService {
   /// ⭐ KRİTİK: Hem main isolate hem de background isolate'in cache'ini temizler.
   /// Main isolate → static değişkenleri sıfırla
   /// Background isolate → SharedPreferences üzerinden "invalidate" sinyali gönder
-  static void invalidateStatusCache() {
+  static Future<void> invalidateStatusCache() async {
     print('🔄 Status cache invalidate edildi (main isolate)');
     _cachedCourierStatus = null;
     _lastStatusCheck = null;
     // Not: _lastSentLatitude ve _lastSentLongitude temizlenmez (konum cache'i)
     // Not: _lastBackendCheck temizlenmez (backend kontrol cache'i)
-    
-    // ⭐ Background isolate'e invalidate sinyali gönder (SharedPreferences üzerinden)
-    // Background isolate bu flag'i okuyunca cache'ini temizleyecek
-    SharedPreferences.getInstance().then((prefs) {
-      prefs.setInt('status_cache_invalidated_at', DateTime.now().millisecondsSinceEpoch);
-      print('🔄 Background isolate cache invalidate sinyali gönderildi (SharedPreferences)');
-    }).catchError((e) {
+
+    // ⭐ Background isolate'e invalidate sinyali (disk flush için await)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(
+        'status_cache_invalidated_at',
+        DateTime.now().millisecondsSinceEpoch,
+      );
+      print(
+        '🔄 Background isolate cache invalidate sinyali gönderildi (SharedPreferences)',
+      );
+    } catch (e) {
       print('⚠️ Cache invalidate sinyal hatası: $e');
-    });
+    }
   }
 
   // ─── Havuz Sipariş Arka Plan Dinleyicisi ───────────────────────────────────
@@ -1118,6 +1151,15 @@ class LocationService {
   static Future<void> _startBackgroundPoolListener() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+
+      // Uygulama ön plandaysa HomeScreen'deki _poolCountSubscription zaten aynı
+      // query'yi dinliyor — duplicate listener açmaya gerek yok.
+      final appIsRunning = prefs.getBool('app_is_running') ?? false;
+      if (appIsRunning) {
+        print('📦 Uygulama ön planda, background pool listener başlatılmadı');
+        return;
+      }
+
       final enabled = prefs.getBool('pool_enabled') ?? false;
       if (!enabled) {
         print('📦 Havuz izni yok, arka plan dinleyicisi başlatılmadı');

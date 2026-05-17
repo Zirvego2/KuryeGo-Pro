@@ -12,6 +12,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../services/firebase_service.dart';
 import '../services/location_service.dart';
@@ -56,7 +57,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String _ownCourierDocId = '';
   bool _isLoading = true;
   String _selectedFilter = 'waiting'; // all, waiting, onroad
-  bool _quickActionsExpanded = false; // Sağ panel: Havuz / Sistem Dışı
+  bool _quickActionsExpanded = false; // Sağ panel: Havuz / Sistem Dışı / Yönetici Ara (her zaman)
   bool _notificationExpanded = true; // Sağ panel: Onay bekleyenler (gizle/aç)
   
   // ⭐ YENİ: Header bilgileri
@@ -107,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _showRestaurantMarkers = true; // Web panel genel ayarlardan kontrol edilir
   StreamSubscription<QuerySnapshot>? _restaurantOrdersSubscription; // Kuryeye atanmamış siparişler stream'i
   StreamSubscription? _ordersSubscription; // ⭐ Sipariş stream subscription
+  StreamSubscription<int>? _courierStatusSubscription; // ⭐ Kurye statü stream subscription
   StreamSubscription<bool>? _courierOnTheWaySubscription;
   StreamSubscription<Position>? _mapPositionSubscription;
 
@@ -121,12 +123,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _initializeApp();
   }
 
-  /// Sağ tarafta gizlenebilir hızlı işlemler (Havuz / Sistem Dışı)
+  /// Sağ tarafta gizlenebilir hızlı işlemler. Yönetici Ara her zaman; Havuz / Sistem Dışı yetkiye bağlı.
   Widget _buildQuickActionsPanel() {
-    if (!_poolPermissionEnabled && !_externalOrderEntryEnabled) {
-      return const SizedBox.shrink();
-    }
     const double panelWidth = 160;
+    final hasPoolOrExternal = _poolPermissionEnabled || _externalOrderEntryEnabled;
 
     return Container(
       width: panelWidth,
@@ -258,12 +258,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
                         ),
-                          icon: const Icon(Icons.add_box_outlined, size: 16),
-                          label: const Text(
-                            'Sistem Dışı',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
-                          ),
+                        icon: const Icon(Icons.add_box_outlined, size: 16),
+                        label: const Text(
+                          'Sistem Dışı',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                        ),
                       ),
+                    Padding(
+                      padding: EdgeInsets.only(top: hasPoolOrExternal ? 5 : 0),
+                      child: ElevatedButton.icon(
+                        onPressed: _callActiveSistemSorumlusu,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF7C3AED),
+                          elevation: 0,
+                          side: const BorderSide(color: Color(0xFF7C3AED)),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                        ),
+                        icon: const Icon(Icons.phone_in_talk_outlined, size: 16),
+                        label: const Text(
+                          'Yönetici Ara',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -274,6 +293,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
+  /// Aktif sistem sorumlusunu ara ([t_sistem_sorumlusu], web: /main/dashboard/sistem-sorumlusu).
+  Future<void> _callActiveSistemSorumlusu() async {
+    try {
+      final phone = await FirebaseService.getActiveSistemSorumlusuPhone(_bayId);
+      if (!mounted) return;
+      if (phone == null || phone.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Bu bay için aktif sistem sorumlusu veya telefon bulunamadı.'),
+          ),
+        );
+        return;
+      }
+      final digits = StringBuffer();
+      final trimmed = phone.trim();
+      for (var i = 0; i < trimmed.length; i++) {
+        final c = trimmed[i];
+        if (c == '+' && digits.isEmpty) {
+          digits.write(c);
+        } else if (RegExp(r'\d').hasMatch(c)) {
+          digits.write(c);
+        }
+      }
+      if (digits.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Geçerli bir telefon numarası yok.')),
+        );
+        return;
+      }
+      final uri = Uri.parse('tel:${digits.toString()}');
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Arama başlatılamadı.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Yönetici telefonu alınamadı: $e')),
+      );
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -282,6 +346,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _poolNotificationAudioPlayer.dispose(); // Havuz audio player'ı temizle
     _restaurantOrdersSubscription?.cancel(); // ⭐ Restoran sipariş stream'ini iptal et
     _ordersSubscription?.cancel(); // ⭐ Sipariş stream'ini iptal et
+    _courierStatusSubscription?.cancel(); // ⭐ Kurye statü stream'ini iptal et
     _courierOnTheWaySubscription?.cancel();
     _poolCountSubscription?.cancel(); // Havuz sayım stream'ini iptal et
     _mapPositionSubscription?.cancel();
@@ -298,7 +363,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _setAppRunningFlag(true);
+      FlutterBackgroundService().invoke('appResumed');
       _refreshBreakStateOnResume();
+    } else if (state == AppLifecycleState.paused) {
+      _setAppRunningFlag(false);
+      FlutterBackgroundService().invoke('appPaused');
     }
   }
 
@@ -396,7 +466,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     // ⭐ Kurye statusunu dinle (real-time)
     print('👤 Kurye statüsü dinleniyor: Kurye ID = $_courierId');
-    FirebaseService.watchCourierStatus(_courierId!).listen(
+    _courierStatusSubscription = FirebaseService.watchCourierStatus(_courierId!).listen(
       (status) {
         print('👤 Kurye statüsü güncellendi: $status');
         if (mounted) {
@@ -2006,7 +2076,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_isRouteActive && _currentRoute != null && _currentRoute!.routePoints.isNotEmpty && _currentLocation != null) {
       List<LatLng> points;
       
-      // Directions API'den gelen gerçek rota çizgisi varsa onu kullan
+      // OSRM'den gelen gerçek rota çizgisi varsa onu kullan
       if (_currentRoute!.routePolyline != null && _currentRoute!.routePolyline!.isNotEmpty) {
         points = _currentRoute!.routePolyline!;
       } else {
@@ -2075,7 +2145,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       print('🔄 [ROTA] ${ordersToRoute.length} sipariş için rota hesaplanıyor...');
 
-      // Rota hesapla (Directions API ile gerçek yollar üzerinden)
+      // Rota hesapla (OSRM ile gerçek yol; olmazsa Haversine)
       final route = await RouteService.calculateRoute(
         startLocation: _currentLocation!,
         orders: ordersToRoute,
@@ -2160,7 +2230,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       return;
     }
 
-      // Rota hesapla (Directions API ile gerçek yollar üzerinden)
+      // Rota hesapla (OSRM ile gerçek yol; olmazsa Haversine)
       final route = await RouteService.calculateRoute(
         startLocation: _currentLocation!,
         orders: ordersToRoute,
@@ -2700,7 +2770,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             child: _buildRouteControlPanel(),
           ),
 
-          // ⭐ Sağ tarafta gizlenebilir hızlı işlemler (Havuz / Sistem Dışı)
+          // ⭐ Sağ tarafta gizlenebilir hızlı işlemler (Yönetici Ara her zaman; Havuz/Sistem Dışı yetkiye bağlı)
           AnimatedPositioned(
             duration: const Duration(milliseconds: 220),
             curve: Curves.easeOut,

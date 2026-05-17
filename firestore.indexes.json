@@ -259,6 +259,60 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "t_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "s_bay", "order": "ASCENDING" },
+        { "fieldPath": "s_courier", "order": "ASCENDING" },
+        { "fieldPath": "s_stat", "order": "ASCENDING" },
+        { "fieldPath": "s_ddate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_work_handovers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "courier_id", "order": "ASCENDING" },
+        { "fieldPath": "bay_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_work_handovers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "courier_id", "order": "ASCENDING" },
+        { "fieldPath": "bay_id", "order": "ASCENDING" },
+        { "fieldPath": "submitted_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_work_handovers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "work_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "submitted_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_work_handovers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "bay_id", "order": "ASCENDING" },
+        { "fieldPath": "submitted_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "t_courier_work_handovers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "work_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "resolved_at", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

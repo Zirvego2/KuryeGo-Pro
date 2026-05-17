@@ -12,8 +12,10 @@ import '../services/sms_service.dart';
 import '../services/javipos_api_service.dart';
 import '../services/sepettakip_status_service.dart';
 import '../utils/payment_change_logger.dart';
+import '../utils/zirvego_payment_groups.dart';
 import '../utils/network_utils.dart';
 import '../services/courier_cash_transaction_service.dart';
+import 'kapida_odeme_turu_picker_dialog.dart';
 
 /// Sipariş Detay Modal (Bottom Sheet)
 /// React Native Page_Center.js karşılığı
@@ -33,6 +35,8 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
   final _cashController = TextEditingController();
   final _cardController = TextEditingController();
   String _paymentMethod = 'cash';
+  /// Kapıda kart/çek Zirvego `s_odeme_id` (kKart grubu).
+  int _kapidaKartOdemeId = 5;
   
   // ⏰ YENİ: Onay timeout geri sayımı
   int? _remainingTime; // Kalan süre (saniye)
@@ -69,6 +73,12 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
     } else if (widget.order.ssPaytype == 1) {
       _cardController.text = widget.order.ssPaycount.toString();
       _paymentMethod = 'card';
+    }
+    final oid = widget.order.sOdemeId;
+    if (oid != null && ZirvegoPaymentGroups.isKKartId(oid)) {
+      _kapidaKartOdemeId = oid;
+    } else {
+      _kapidaKartOdemeId = 5;
     }
   }
 
@@ -617,8 +627,7 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
             );
           }
 
-          // Kurye durumunu tek noktadan uzlaştır (s_stat + s_on_the_way)
-          await FirebaseService.reconcileCourierStatusAfterOrderChange(widget.order.sCourier);
+          // Kurye müsait/meşgul: FirebaseService.updateOrderStatus (teslim) içinde uzlaştırılıyor
 
           // Platform API çağrısı (Teslim Et - Online)
           if (widget.order.sOrderscr >= 1 && widget.order.sOrderscr <= 4) {
@@ -749,6 +758,11 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
                 newPayment: newPayment,
               );
             }
+            final newSs = _paymentMethod == 'cash' ? 0 : 1;
+            final odemeFields = ZirvegoPaymentGroups.firestoreOdemeFieldsForSsPaytype(
+              newSs,
+              kKartOdemeId: _paymentMethod == 'card' ? _kapidaKartOdemeId : null,
+            );
             await FirebaseService.updateOrderStatus(
               widget.order.docId,
               2,
@@ -757,7 +771,10 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
                 's_pay.ss_paycount': _paymentMethod == 'cash' ? cash : card,
                 's_pay.ss_paycountdiv': _paymentMethod == 'cash' ? card : cash,
                 's_pay.payType': _paymentMethod == 'cash' ? 0 : 1,
-                if (widget.order.ssPaytype != 3) 's_pay.ss_paytype': _paymentMethod == 'cash' ? 0 : 1,
+                if (widget.order.ssPaytype != 3) ...{
+                  's_pay.ss_paytype': newSs,
+                  if (odemeFields != null) ...odemeFields,
+                },
               },
             );
             if (SepettakipStatusService.isSepettakipOrder(widget.order.sSource)) {
@@ -1357,6 +1374,17 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
     );
   }
 
+  /// Kapıda kart/çek için Zirvego s_odeme_id seçimi
+  Future<void> _openKapidaKartPicker() async {
+    final picked = await showKapidaOdemeTuruPickerDialog(
+      context,
+      currentId: _kapidaKartOdemeId,
+    );
+    if (picked != null && mounted) {
+      setState(() => _kapidaKartOdemeId = picked);
+    }
+  }
+
   /// Ödeme doğrulama
   /// - Nakit: Nakit/Kart radio + tutar alanları + onay
   /// - Diğer kapıda ödeme (Multinet, Sodexo, Ticket vb.): Ödeme adı + onay
@@ -1441,6 +1469,46 @@ class _OrderBottomSheetState extends State<OrderBottomSheet> {
                   ),
                 ],
               ),
+              if (_paymentMethod == 'card') ...[
+                const SizedBox(height: 12),
+                InkWell(
+                  onTap: _openKapidaKartPicker,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.blue.shade200),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.blue.shade50,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.category, color: Colors.blue.shade700, size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Kapıda ödeme türü',
+                                style: TextStyle(fontSize: 12, color: Colors.black54),
+                              ),
+                              Text(
+                                '${ZirvegoPaymentGroups.idToDisplayName[_kapidaKartOdemeId] ?? '—'} · Kod $_kapidaKartOdemeId',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right, color: Colors.blue.shade700),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               CheckboxListTile(
                 value: _paymentConfirmed,

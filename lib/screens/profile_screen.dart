@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/firebase_service.dart';
 import '../services/location_service.dart';
 import '../widgets/shift_menu_sheet.dart';
 import '../services/shift_service.dart';
@@ -8,6 +9,8 @@ import 'login_screen.dart';
 import 'payment_changes_screen.dart';
 import 'settings_screen.dart';
 import 'cash_on_hand_screen.dart';
+import 'work_handover_screen.dart';
+import 'work_handover_my_balance_screen.dart';
 import 'leave_plan_screen.dart';
 import 'my_external_orders_screen.dart';
 import 'my_external_orders_report_screen.dart';
@@ -47,6 +50,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _plaka = '';
   String _vehicleModel = '';
   int _courierStatus = 1;
+  bool _workHandoverEnabled = false;
 
   // Haftalık vardiya bilgileri
   Map<String, dynamic>? _weeklyShift;
@@ -177,6 +181,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         }
       }
 
+      final handover = await FirebaseService.isCourierWorkHandoverEnabledForBay(widget.bayId);
+      if (!mounted) return;
+      setState(() => _workHandoverEnabled = handover);
+
       setState(() => _isLoading = false);
     } catch (e) {
       print('❌ Profil veri yükleme hatası: $e');
@@ -261,6 +269,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const Color(0xFF4CAF50),
                     _openCashOnHand,
                   ),
+                  if (_workHandoverEnabled) ...[
+                    const SizedBox(height: 10),
+                    _buildActionButton(
+                      'İşletme bazlı teslim',
+                      Icons.store_mall_directory_outlined,
+                      const Color(0xFF7C3AED),
+                      _openWorkHandover,
+                    ),
+                    const SizedBox(height: 10),
+                    _buildActionButton(
+                      'Teslim ettiğim bakiye',
+                      Icons.account_balance_wallet_outlined,
+                      const Color(0xFF5B21B6),
+                      _openWorkHandoverMyBalance,
+                    ),
+                  ],
 
                   const SizedBox(height: 20),
 
@@ -867,6 +891,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => CashOnHandScreen(
+          courierId: widget.courierId,
+          bayId: widget.bayId,
+        ),
+      ),
+    );
+  }
+
+  void _openWorkHandoverMyBalance() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WorkHandoverMyBalanceScreen(
+          courierId: widget.courierId,
+          bayId: widget.bayId,
+        ),
+      ),
+    );
+  }
+
+  void _openWorkHandover() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WorkHandoverScreen(
           courierId: widget.courierId,
           bayId: widget.bayId,
         ),

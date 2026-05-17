@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/shift_service.dart';
 import '../services/firebase_service.dart';
 import '../services/location_service.dart';
@@ -186,10 +185,10 @@ class _ShiftMenuSheetState extends State<ShiftMenuSheet> {
     );
   }
   
-  /// Anlık mola bilgisini güncelle
+  /// Anlık mola bilgisini güncelle (saniyelik timer için Firestore çağrısı yok — stream'deki [_activeLog] kullanılır).
   Future<void> _updateBreakInfo() async {
     if (_activeLog?.status == 'BREAK') {
-      final info = await _breakService.getCurrentBreakInfo(widget.courierId);
+      final info = _breakService.breakInfoFromLog(_activeLog);
       if (mounted) {
         setState(() {
           _currentBreakInfo = info;

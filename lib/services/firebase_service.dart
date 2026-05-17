@@ -26,22 +26,11 @@ class FirebaseService {
       print('📱 Phone: "$phone"');
       print('🔑 Password: "${password.replaceAll(RegExp('.'), '*')}"');
 
-      // Önce tüm kuryerleri çek ve kontrol et (debug için)
-      final allCouriers = await db.collection('t_courier').get();
-      print('📊 Toplam kurye sayısı: ${allCouriers.docs.length}');
-      
-      if (allCouriers.docs.isNotEmpty) {
-        print('📝 İlk kurye örneği:');
-        final firstCourier = allCouriers.docs.first.data();
-        print('   s_phone: "${firstCourier['s_phone']}" (${firstCourier['s_phone'].runtimeType})');
-        print('   s_password: "${firstCourier['s_password']}" (${firstCourier['s_password'].runtimeType})');
-        print('   s_id: ${firstCourier['s_id']}');
-      }
-
       final querySnapshot = await db
           .collection('t_courier')
           .where('s_phone', isEqualTo: phone)
           .where('s_password', isEqualTo: password)
+          .limit(1)
           .get();
 
       print('🔍 Sorgu sonucu: ${querySnapshot.docs.length} kullanıcı bulundu');
@@ -51,6 +40,7 @@ class FirebaseService {
         final phoneOnlyQuery = await db
             .collection('t_courier')
             .where('s_phone', isEqualTo: phone)
+            .limit(1)
             .get();
         
         if (phoneOnlyQuery.docs.isEmpty) {
@@ -83,12 +73,14 @@ class FirebaseService {
           .where('s_phone', isEqualTo: phone)
           .where('s_password', isEqualTo: password)
           .where('isActive', isEqualTo: true)
+          .limit(1)
           .get();
 
       if (querySnapshot.docs.isEmpty) {
         final phoneCheck = await db
             .collection('t_work_couriers')
             .where('s_phone', isEqualTo: phone)
+            .limit(1)
             .get();
         if (phoneCheck.docs.isEmpty) {
           print('❌ Bu telefon numarasıyla restoran kuryesi bulunamadı');
@@ -151,74 +143,82 @@ class FirebaseService {
   /// Siparişleri dinle (Real-time)
   /// s_stat: 0 = Hazırlandı (Alınacak), 4 = Hazırlanıyor, 1 = Teslim Alındı (Yolda), 2 = Teslim Edildi, 3 = İptal
   /// NOT: orderBy client-side yapılıyor (Firestore index hazır olana kadar)
+  /// `s_courier` bazı kayıtlarda int, bazılarında string; iki sorgu birleştirilir ([reconcileCourierStatusAfterOrderChange] ile aynı kapsam).
   static Stream<List<Map<String, dynamic>>> watchOrders(int courierId) {
     print(
-        '👀 Siparişler dinleniyor: Kurye ID = $courierId (s_courier: int + string)');
+      '👀 Siparişler dinleniyor: Kurye ID = $courierId (s_courier: int + string)',
+    );
 
-    final Query<Map<String, dynamic>> qInt = db
-        .collection('t_orders')
-        .where('s_courier', isEqualTo: courierId)
-        .where('s_stat', whereIn: [0, 1, 4]);
+    var lastInt = <Map<String, dynamic>>[];
+    var lastStr = <Map<String, dynamic>>[];
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? subInt;
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? subStr;
 
-    final Query<Map<String, dynamic>> qStr = db
-        .collection('t_orders')
-        .where('s_courier', isEqualTo: courierId.toString())
-        .where('s_stat', whereIn: [0, 1, 4]);
-
-    return Stream<List<Map<String, dynamic>>>.multi((mc) {
-      QuerySnapshot<Map<String, dynamic>>? snapInt;
-      QuerySnapshot<Map<String, dynamic>>? snapStr;
-
-      void emitMerged() {
-        final byId = <String, Map<String, dynamic>>{};
-        void ingest(QuerySnapshot<Map<String, dynamic>>? snap) {
-          if (snap == null) return;
-          for (final doc in snap.docs) {
-            final data = Map<String, dynamic>.from(doc.data());
-            data['docId'] = doc.id;
-            byId[doc.id] = data;
+    late final StreamController<List<Map<String, dynamic>>> controller;
+    controller = StreamController<List<Map<String, dynamic>>>(
+      onListen: () {
+        void emitMerged() {
+          final byId = <String, Map<String, dynamic>>{};
+          for (final o in lastInt) {
+            final id = o['docId'] as String?;
+            if (id != null) byId[id] = o;
           }
+          for (final o in lastStr) {
+            final id = o['docId'] as String?;
+            if (id != null) byId[id] = o;
+          }
+          final merged = byId.values.toList();
+          print('📦 Aktif sipariş (ham birleşik): ${merged.length}');
+          final sorted = _filterSortWatchOrders(merged);
+          print('📦 Filtrelenmiş aktif sipariş sayısı: ${sorted.length}');
+          if (!controller.isClosed) controller.add(sorted);
         }
 
-        ingest(snapInt);
-        ingest(snapStr);
+        subInt = db
+            .collection('t_orders')
+            .where('s_courier', isEqualTo: courierId)
+            .where('s_stat', whereIn: [0, 1, 4])
+            .snapshots()
+            .listen(
+          (snap) {
+            lastInt = snap.docs.map((doc) {
+              final data = Map<String, dynamic>.from(doc.data());
+              data['docId'] = doc.id;
+              return data;
+            }).toList();
+            emitMerged();
+          },
+          onError: (e, st) {
+            if (!controller.isClosed) controller.addError(e, st);
+          },
+        );
 
-        final merged = byId.values.toList();
-        print(
-            '📦 Aktif sipariş (birleşik, ham): ${merged.length} — int:${snapInt?.docs.length ?? '—'} string:${snapStr?.docs.length ?? '—'}');
+        subStr = db
+            .collection('t_orders')
+            .where('s_courier', isEqualTo: courierId.toString())
+            .where('s_stat', whereIn: [0, 1, 4])
+            .snapshots()
+            .listen(
+          (snap) {
+            lastStr = snap.docs.map((doc) {
+              final data = Map<String, dynamic>.from(doc.data());
+              data['docId'] = doc.id;
+              return data;
+            }).toList();
+            emitMerged();
+          },
+          onError: (e, st) {
+            if (!controller.isClosed) controller.addError(e, st);
+          },
+        );
+      },
+      onCancel: () async {
+        await subInt?.cancel();
+        await subStr?.cancel();
+      },
+    );
 
-        final sorted = _filterSortWatchOrders(merged);
-        print('📦 Filtrelenmiş aktif sipariş sayısı: ${sorted.length}');
-        mc.add(sorted);
-      }
-
-      final subInt = qInt.snapshots().listen(
-        (s) {
-          snapInt = s;
-          emitMerged();
-        },
-        onError: (Object e, StackTrace st) {
-          print('❌ Sipariş dinleme (s_courier int): $e');
-          mc.addError(e, st);
-        },
-      );
-
-      final subStr = qStr.snapshots().listen(
-        (s) {
-          snapStr = s;
-          emitMerged();
-        },
-        onError: (Object e, StackTrace st) {
-          print('❌ Sipariş dinleme (s_courier string): $e');
-          mc.addError(e, st);
-        },
-      );
-
-      mc.onCancel = () async {
-        await subInt.cancel();
-        await subStr.cancel();
-      };
-    }).handleError((error, _) {
+    return controller.stream.handleError((error, _) {
       print('❌ Sipariş dinleme hatası: $error');
     });
   }
@@ -289,6 +289,14 @@ class FirebaseService {
     Map<String, dynamic>? paymentData,
   }) async {
     try {
+      // Teslim (2) sonrası kurye meşgul/müsait uzlaştırması için s_courier güncellemeden okunur
+      int? courierIdToReconcile;
+      if (newStatus == 2) {
+        final preSnap = await db.collection('t_orders').doc(orderId).get();
+        final cid = coerceFirestoreInt(preSnap.data()?['s_courier']);
+        if (cid > 0) courierIdToReconcile = cid;
+      }
+
       final updateData = <String, dynamic>{'s_stat': newStatus};
 
       if (receivedTime != null) {
@@ -307,6 +315,10 @@ class FirebaseService {
       await db.collection('t_orders').doc(orderId).update(updateData);
 
       print('✅ Sipariş durumu güncellendi: $orderId -> status: $newStatus');
+
+      if (newStatus == 2 && courierIdToReconcile != null) {
+        await reconcileCourierStatusAfterOrderChange(courierIdToReconcile);
+      }
     } catch (e) {
       print('❌ Sipariş güncelleme hatası: $e');
       rethrow;
@@ -761,7 +773,7 @@ class FirebaseService {
         print('📝 Firestore güncellemesi tamamlandı');
         
         // 💾 Cache'i invalidate et
-        LocationService.invalidateStatusCache();
+        await LocationService.invalidateStatusCache();
         
         print('✅ ✅ ✅ Kurye statüsü güncellendi: $courierId -> $status');
         
@@ -876,9 +888,8 @@ class FirebaseService {
       if (currentStat == 0 || currentStat == 3 || currentStat == 4) {
         print('🚫 [CourierReconcile] Statü korunuyor (offline/mola/kaza): courierId=$courierId, s_stat=$currentStat');
       } else {
-        final cutoff = Timestamp.fromDate(
-          DateTime.now().subtract(const Duration(hours: 24)),
-        );
+        // Aktif sipariş tanımı [watchOrders] ile aynı: s_stat ∈ {0,1,4}, s_cdate filtresi yok
+        // (eski siparişler s_cdate olmadan veya 24h dışında kalsa bile liste ile uyum için).
 
         // Firestore "at most one 'in' per query" kısıtı nedeniyle s_courier için
         // whereIn kullanamayız; int ve string türlerini iki ayrı sorguyla sorgula.
@@ -886,14 +897,12 @@ class FirebaseService {
             .collection('t_orders')
             .where('s_courier', isEqualTo: courierId)
             .where('s_stat', whereIn: [0, 1, 4])
-            .where('s_cdate', isGreaterThan: cutoff)
             .get();
 
         final q2 = await db
             .collection('t_orders')
             .where('s_courier', isEqualTo: courierId.toString())
             .where('s_stat', whereIn: [0, 1, 4])
-            .where('s_cdate', isGreaterThan: cutoff)
             .get();
 
         final activeDocIds = <String>{
@@ -922,6 +931,40 @@ class FirebaseService {
       } catch (e) {
         print('⚠️ [CourierReconcile] s_on_the_way yenileme hatası: $e');
       }
+    }
+  }
+
+  /// İşletme–kurye teslim / onay akışı (Genel Ayarlar).
+  /// Kaynak: t_bay.s_settings.courierWorkHandoverEnabled — varsayılan kapalı.
+  static Future<bool> isCourierWorkHandoverEnabledForBay(int bayId) async {
+    try {
+      QuerySnapshot<Map<String, dynamic>> querySnapshot = await db
+          .collection('t_bay')
+          .where('s_id', isEqualTo: bayId)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        querySnapshot = await db
+            .collection('t_bay')
+            .where('s_bay', isEqualTo: bayId)
+            .limit(1)
+            .get();
+      }
+
+      if (querySnapshot.docs.isEmpty) {
+        print('⚠️ Bay bulunamadı (courierWorkHandoverEnabled): $bayId');
+        return false;
+      }
+
+      final bayData = querySnapshot.docs.first.data();
+      final sSettings = bayData['s_settings'] as Map<String, dynamic>?;
+      final enabled = sSettings?['courierWorkHandoverEnabled'] == true;
+      print('⚙️ courierWorkHandoverEnabled (bay=$bayId): $enabled');
+      return enabled;
+    } catch (e) {
+      print('❌ courierWorkHandoverEnabled okuma hatası: $e');
+      return false;
     }
   }
 
@@ -959,6 +1002,43 @@ class FirebaseService {
     } catch (e) {
       print('❌ externalOrderEntryEnabled okuma hatası: $e');
       return false;
+    }
+  }
+
+  /// Web panel [pageSistemSorumlusu] ile aynı kaynak: aktif sistem sorumlusunun telefonu.
+  /// `aktif` için bileşik index gerektirmemek üzere `bay_id` ile çekilip istemci tarafında süzülür.
+  static Future<String?> getActiveSistemSorumlusuPhone(int bayId) async {
+    String? pickPhone(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+      for (final d in docs) {
+        final data = d.data();
+        final aktif = data['aktif'];
+        if (aktif != true && aktif != 1) continue;
+        final t = data['telefon'];
+        if (t == null) continue;
+        final s = t.toString().trim();
+        if (s.isNotEmpty) return s;
+      }
+      return null;
+    }
+
+    try {
+      var snap = await db
+          .collection('t_sistem_sorumlusu')
+          .where('bay_id', isEqualTo: bayId)
+          .limit(50)
+          .get();
+      var found = pickPhone(snap.docs);
+      if (found != null) return found;
+
+      snap = await db
+          .collection('t_sistem_sorumlusu')
+          .where('bay_id', isEqualTo: bayId.toString())
+          .limit(50)
+          .get();
+      return pickPhone(snap.docs);
+    } catch (e) {
+      print('❌ getActiveSistemSorumlusuPhone hatası: $e');
+      rethrow;
     }
   }
 
